@@ -15,6 +15,8 @@
  * 
  * Запуск: node scripts/long-polling.cjs
  * PM2: pm2 start scripts/long-polling.cjs --name vk-bot
+ * 
+ * Улучшение #13: Автоматическая пересылка постов из группы 1 в доску объявлений
  */
 
 const path = require('path');
@@ -72,6 +74,7 @@ const storage = {
   greetings: new Map(), // peer_id -> greeting_text
   localBlacklist: new Map(), // userId -> { endDate: timestamp, reason: string, bannedAt: timestamp, bannedBy: userId }
   mutes: new Map(), // `${peerId}_${userId}` -> { endDate: timestamp, reason: string, mutedAt: timestamp, mutedBy: userId }
+  pinnedMessages: new Map(), // peer_id -> conversation_message_id (для редактирования закрепленных сообщений)
 };
 
 // Путь к файлам
@@ -395,6 +398,73 @@ function createUserLink(user) {
   return `[vk.com/id${user.id}|${user.first_name} ${user.last_name}]`;
 }
 
+// Функция для перезагрузки фото в группу (для постов на стене)
+async function reuploadPhotoToGroup(photoAttachment, groupId, useGroup2 = false) {
+  try {
+    // Находим максимальный размер фото
+    const sizes = photoAttachment.sizes || [];
+    if (sizes.length === 0) {
+      console.error('[VK Bot] Нет доступных размеров фото');
+      return null;
+    }
+    
+    // Сортируем по размеру и берем самый большой
+    sizes.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+    const photoUrl = sizes[0].url;
+    
+    console.log('[VK Bot] Скачиваем фото с URL:', photoUrl);
+    
+    // Скачиваем фото
+    const photoResponse = await fetch(photoUrl);
+    const photoBuffer = await photoResponse.arrayBuffer();
+    
+    // Получаем URL для загрузки на сервер ВК
+    const uploadServer = await callVK('photos.getWallUploadServer', {
+      group_id: groupId
+    }, useGroup2);
+    
+    console.log('[VK Bot] Upload server URL:', uploadServer.upload_url);
+    
+    // Создаем FormData для загрузки
+    const FormData = require('form-data');
+    const formData = new FormData();
+    formData.append('photo', Buffer.from(photoBuffer), {
+      filename: 'photo.jpg',
+      contentType: 'image/jpeg'
+    });
+    
+    // Загружаем фото на сервер ВК
+    const uploadResponse = await fetch(uploadServer.upload_url, {
+      method: 'POST',
+      body: formData,
+      headers: formData.getHeaders()
+    });
+    
+    const uploadResult = await uploadResponse.json();
+    console.log('[VK Bot] Upload result:', JSON.stringify(uploadResult));
+    
+    // Сохраняем фото в альбоме группы
+    const saveResult = await callVK('photos.saveWallPhoto', {
+      group_id: groupId,
+      photo: uploadResult.photo,
+      server: uploadResult.server,
+      hash: uploadResult.hash
+    }, useGroup2);
+    
+    if (saveResult && saveResult[0]) {
+      const savedPhoto = saveResult[0];
+      const photoId = `photo${savedPhoto.owner_id}_${savedPhoto.id}`;
+      console.log('[VK Bot] Фото успешно загружено в группу:', photoId);
+      return photoId;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('[VK Bot] Ошибка перезагрузки фото:', error);
+    return null;
+  }
+}
+
 function peerIdToChatId(peerId) {
   return peerId - 2000000000;
 }
@@ -447,7 +517,7 @@ function getRoleByChat(peerId) {
   // Если пишет в чате СС - может быть РС или СС, проверим дополнительно
   if (chatId === CHATS.ss) return 'ss';
 
-  // Если в других чатах - проверим по списку доступа
+  // Если в других ча��ах - проверим по списку доступа
   if (chatId === CHATS.fludilka || chatId === CHATS.dispetcherskaya || chatId === CHATS.zhurnal || chatId === CHATS.doska) {
     return 'kurier'; // П�� умолчанию курьер, если есть доступ к эти�� чатам
   }
@@ -547,44 +617,41 @@ async function cmdPost(ctx) {
     const text = msg.text || '';
     const attachments = [];
 
-    console.log('[v0] cmdPost: Обрабатываем сообщение с вложениями:', msg.attachments?.length || 0);
-
     // Собираем вложения
     if (msg.attachments) {
       for (const att of msg.attachments) {
-        console.log('[v0] cmdPost: Тип вложения:', att.type);
-        
         if (att.type === 'photo') {
-          // У фото берем access_key если есть
-          let photoId = `photo${att.photo.owner_id}_${att.photo.id}`;
-          if (att.photo.access_key) {
-            photoId += `_${att.photo.access_key}`;
+          // Фото из личных сообщений нужно перезагрузить в группу
+          if (att.photo) {
+            const reuploadedPhotoId = await reuploadPhotoToGroup(att.photo, VK_GROUP2_ID, true);
+            if (reuploadedPhotoId) {
+              attachments.push(reuploadedPhotoId);
+            }
           }
-          console.log('[v0] cmdPost: Добавляем фото:', photoId);
-          attachments.push(photoId);
         } else if (att.type === 'video') {
-          let videoId = `video${att.video.owner_id}_${att.video.id}`;
-          if (att.video.access_key) {
-            videoId += `_${att.video.access_key}`;
+          if (att.video && att.video.owner_id && att.video.id) {
+            let videoId = `video${att.video.owner_id}_${att.video.id}`;
+            if (att.video.access_key) {
+              videoId += `_${att.video.access_key}`;
+            }
+            attachments.push(videoId);
           }
-          console.log('[v0] cmdPost: Добавляем видео:', videoId);
-          attachments.push(videoId);
         } else if (att.type === 'doc') {
-          let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
-          if (att.doc.access_key) {
-            docId += `_${att.doc.access_key}`;
+          if (att.doc && att.doc.owner_id && att.doc.id) {
+            let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
+            if (att.doc.access_key) {
+              docId += `_${att.doc.access_key}`;
+            }
+            attachments.push(docId);
           }
-          console.log('[v0] cmdPost: Добавляем документ:', docId);
-          attachments.push(docId);
         } else if (att.type === 'audio') {
-          const audioId = `audio${att.audio.owner_id}_${att.audio.id}`;
-          console.log('[v0] cmdPost: Добавляем аудио:', audioId);
-          attachments.push(audioId);
+          if (att.audio && att.audio.owner_id && att.audio.id) {
+            const audioId = `audio${att.audio.owner_id}_${att.audio.id}`;
+            attachments.push(audioId);
+          }
         }
       }
     }
-
-    console.log('[v0] cmdPost: Всего вложений собрано:', attachments.length);
 
     // Публикуем на стену группы 2
     const postParams = {
@@ -595,15 +662,13 @@ async function cmdPost(ctx) {
     
     if (attachments.length > 0) {
       postParams.attachments = attachments.join(',');
-      console.log('[v0] cmdPost: Параметр attachments:', postParams.attachments);
     }
 
     const result = await callVK('wall.post', postParams, true);
-    console.log('[v0] cmdPost: Пост опубликован, ID:', result.post_id);
 
     await sendMessage(ctx.peerId, 'Пост успешно опубликован в группе');
   } catch (error) {
-    console.error('[v0] cmdPost: Ошибка публикации:', error);
+    console.error('[VK Bot] Ошибка публикации поста:', error);
     await sendMessage(ctx.peerId, `Ошибка публикации: ${error.message}`);
   }
 }
@@ -633,28 +698,41 @@ async function cmdPrikaz(ctx) {
     if (msg.attachments) {
       for (const att of msg.attachments) {
         if (att.type === 'photo') {
-          let photoId = `photo${att.photo.owner_id}_${att.photo.id}`;
-          if (att.photo.access_key) {
-            photoId += `_${att.photo.access_key}`;
+          // Фото из личных сообщений нужно перезагрузить в группу
+          if (att.photo) {
+            const reuploadedPhotoId = await reuploadPhotoToGroup(att.photo, VK_GROUP1_ID, false);
+            if (reuploadedPhotoId) {
+              attachments.push(reuploadedPhotoId);
+            }
           }
-          attachments.push(photoId);
         } else if (att.type === 'video') {
-          let videoId = `video${att.video.owner_id}_${att.video.id}`;
-          if (att.video.access_key) {
-            videoId += `_${att.video.access_key}`;
+          if (att.video && att.video.owner_id && att.video.id) {
+            let videoId = `video${att.video.owner_id}_${att.video.id}`;
+            if (att.video.access_key) {
+              videoId += `_${att.video.access_key}`;
+            }
+            attachments.push(videoId);
           }
-          attachments.push(videoId);
         } else if (att.type === 'doc') {
-          let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
-          if (att.doc.access_key) {
-            docId += `_${att.doc.access_key}`;
+          if (att.doc && att.doc.owner_id && att.doc.id) {
+            let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
+            if (att.doc.access_key) {
+              docId += `_${att.doc.access_key}`;
+            }
+            attachments.push(docId);
           }
-          attachments.push(docId);
+        } else if (att.type === 'audio') {
+          if (att.audio && att.audio.owner_id && att.audio.id) {
+            const audioId = `audio${att.audio.owner_id}_${att.audio.id}`;
+            attachments.push(audioId);
+          }
         }
       }
     }
 
-    // Публикуем в доску объявлений (запись "Предложить новость" от лица группы)
+    // Публикуем в доску объявлений группы 1
+    // Важно: owner_id должен быть отрицательным (для группы)
+    // from_group: 1 означает публикацию от имени группы
     const postParams = {
       owner_id: -VK_GROUP1_ID,
       message: text,
@@ -665,6 +743,8 @@ async function cmdPrikaz(ctx) {
       postParams.attachments = attachments.join(',');
     }
 
+    // Используем токен группы 1 (useGroup2 = false)
+    // Важно: группа должна иметь права на публикацию на своей стене
     await callVK('wall.post', postParams, false);
 
     await sendMessage(ctx.peerId, 'Приказ успешно опубликован в доску объявлений группы');
@@ -706,9 +786,9 @@ async function cmdGreeting(ctx) {
   let targetPeerId = ctx.peerId; // По умолчанию текущий чат
   if (ctx.args.length >= 2) {
     const chatAlias = ctx.args[1];
-    const chatId = getChatIdByAlias(chatAlias);
-    if (chatId) {
-      targetPeerId = chatIdToPeerId(chatId);
+    const peerId = getChatIdByAlias(chatAlias); // Уже возвращает peer_id
+    if (peerId) {
+      targetPeerId = peerId;
     } else {
       await sendMessage(ctx.peerId,
         'Неизвестный чат. Доступные: рс, сс, уц, до, дисп, флуд, жа, спонсор\n' +
@@ -749,6 +829,8 @@ async function cmdGreeting(ctx) {
   const chatName = getChatName(targetPeerId);
   const attText = attachments.length > 0 ? ` (с ${attachments.length} вложениями)` : '';
   await sendMessage(ctx.peerId, `Приветствие установлено для чата "${chatName}"${attText}`);
+  
+  console.log('[VK Bot] Приветствие сохранено для peer_id:', targetPeerId, 'Текст:', greetingText.substring(0, 50));
 }
 
 // !закреп - закрепление сообщения
@@ -769,9 +851,9 @@ async function cmdPin(ctx) {
   
   if (ctx.args.length >= 2) {
     const chatAlias = ctx.args[1];
-    const chatId = getChatIdByAlias(chatAlias);
-    if (chatId) {
-      targetPeerId = chatId; // chatId уже в формате peer_id (2000000000 + chat_id)
+    const peerId = getChatIdByAlias(chatAlias); // Уже возвращает peer_id
+    if (peerId) {
+      targetPeerId = peerId;
       targetChatAlias = chatAlias;
     } else {
       await sendMessage(ctx.peerId,
@@ -783,69 +865,97 @@ async function cmdPin(ctx) {
   }
 
   try {
-    // Если закрепляем в другом чате - копируем сообщение туда
-    if (targetChatAlias) {
-      const msg = ctx.replyMessage;
-      const text = msg.text || '';
-      const attachments = [];
+    const msg = ctx.replyMessage;
+    const text = msg.text || '';
+    const attachments = [];
 
-      // Собираем вложения
-      if (msg.attachments) {
-        for (const att of msg.attachments) {
-          if (att.type === 'photo') {
-            let photoId = `photo${att.photo.owner_id}_${att.photo.id}`;
-            if (att.photo.access_key) photoId += `_${att.photo.access_key}`;
-            attachments.push(photoId);
-          } else if (att.type === 'video') {
-            let videoId = `video${att.video.owner_id}_${att.video.id}`;
-            if (att.video.access_key) videoId += `_${att.video.access_key}`;
-            attachments.push(videoId);
-          } else if (att.type === 'doc') {
-            let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
-            if (att.doc.access_key) docId += `_${att.doc.access_key}`;
-            attachments.push(docId);
-          }
+    // Собираем вложения
+    if (msg.attachments) {
+      for (const att of msg.attachments) {
+        if (att.type === 'photo') {
+          let photoId = `photo${att.photo.owner_id}_${att.photo.id}`;
+          if (att.photo.access_key) photoId += `_${att.photo.access_key}`;
+          attachments.push(photoId);
+        } else if (att.type === 'video') {
+          let videoId = `video${att.video.owner_id}_${att.video.id}`;
+          if (att.video.access_key) videoId += `_${att.video.access_key}`;
+          attachments.push(videoId);
+        } else if (att.type === 'doc') {
+          let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
+          if (att.doc.access_key) docId += `_${att.doc.access_key}`;
+          attachments.push(docId);
         }
       }
+    }
 
-      // Отправляем сообщение в целевой чат
-      const sendParams = {
+    // Получаем информацию о беседе, чтобы узнать conversation_message_id закрепленного сообщения
+    const conversationInfo = await callVK('messages.getConversationsById', {
+      peer_ids: targetPeerId,
+    });
+    
+    let pinnedMessageCmid = null;
+    
+    // Проверяем разные возможные структуры ответа
+    if (conversationInfo.items && conversationInfo.items.length > 0) {
+      const conversation = conversationInfo.items[0];
+      
+      // Проверяем наличие закрепленного сообщения в chat_settings
+      if (conversation.chat_settings && conversation.chat_settings.pinned_message) {
+        const pinnedMsg = conversation.chat_settings.pinned_message;
+        
+        // VK API имеет опечатку в поле: conversatiion_message_id (три "i")
+        if (pinnedMsg.conversatiion_message_id) {
+          pinnedMessageCmid = pinnedMsg.conversatiion_message_id;
+        } else if (pinnedMsg.conversation_message_id) {
+          pinnedMessageCmid = pinnedMsg.conversation_message_id;
+        } else if (pinnedMsg.cmid) {
+          pinnedMessageCmid = pinnedMsg.cmid;
+        }
+      }
+      // Вариант 2: pinned_message напрямую в conversation
+      else if (conversation.pinned_message) {
+        const pinnedMsg = conversation.pinned_message;
+        if (pinnedMsg.conversatiion_message_id) {
+          pinnedMessageCmid = pinnedMsg.conversatiion_message_id;
+        } else if (pinnedMsg.conversation_message_id) {
+          pinnedMessageCmid = pinnedMsg.conversation_message_id;
+        } else if (pinnedMsg.cmid) {
+          pinnedMessageCmid = pinnedMsg.cmid;
+        }
+      }
+      
+      if (pinnedMessageCmid) {
+        // Сохраняем в хранилище
+        storage.pinnedMessages.set(targetPeerId, pinnedMessageCmid);
+      }
+    }
+    
+    if (pinnedMessageCmid) {
+      // Редактируем существующее закрепленное сообщение
+      const editParams = {
         peer_id: targetPeerId,
+        conversation_message_id: pinnedMessageCmid,
         message: text,
-        random_id: Math.floor(Math.random() * 1000000000),
       };
       
       if (attachments.length > 0) {
-        sendParams.attachment = attachments.join(',');
+        editParams.attachment = attachments.join(',');
       }
-
-      const messageId = await callVK('messages.send', sendParams);
       
-      // Получаем информацию о сообщении через messages.getById
-      const messages = await callVK('messages.getById', {
-        message_ids: messageId,
-      });
+      await callVK('messages.edit', editParams);
       
-      if (messages.items && messages.items.length > 0) {
-        const conversationMessageId = messages.items[0].conversation_message_id;
-        
-        // Закрепляем отправленное сообщение используя только conversation_message_id
-        await callVK('messages.pin', {
-          peer_id: targetPeerId,
-          conversation_message_id: conversationMessageId,
-        });
-      }
-
       const chatName = getChatName(targetPeerId);
-      await sendMessage(ctx.peerId, `Сообщение отправлено и закреплено в чате "${chatName}"`);
+      await sendMessage(ctx.peerId, targetChatAlias 
+        ? `Закрепленное сообщение обновлено в чате "${chatName}"`
+        : 'Закрепленное сообщение обновлено');
     } else {
-      // Закрепляем в текущем чате
-      await callVK('messages.pin', {
-        peer_id: targetPeerId,
-        conversation_message_id: ctx.replyMessage.conversation_message_id,
-      });
-
-      await sendMessage(ctx.peerId, 'Сообщение закреплено');
+      // Закрепленного сообщения нет - предупреждаем пользователя
+      console.log('[v0] cmdPin: Закрепленное сообщение не найдено в чате');
+      const chatName = getChatName(targetPeerId);
+      await sendMessage(ctx.peerId, 
+        `Ошибка: в чате "${chatName}" нет закрепленного сообщения.\n` +
+        `Сначала закрепите сообщение вручную через интерфейс VK, затем используйте команду !закреп для его редактирования.`
+      );
     }
   } catch (error) {
     console.error('[VK Bot] Ошибка закрепления:', error);
@@ -1254,13 +1364,6 @@ async function cmdMute(ctx) {
   }
 
   try {
-    // Используем VK API для ограничения прав в чате
-    await callVK('messages.setMemberRole', {
-      peer_id: ctx.peerId,
-      member_id: targetUserId,
-      role: 'restricted',
-    });
-
     // Добавляем мут в локальное хранилище для отслеживания времени
     addMute(ctx.peerId, targetUserId, duration, reason, ctx.userId);
 
@@ -1269,7 +1372,7 @@ async function cmdMute(ctx) {
     const endDate = Date.now() + duration * 60 * 1000;
     const endDateText = formatBanEndDate(endDate);
 
-    await sendMessage(ctx.peerId, `${userLink} замучен до ${endDateText}\nПричина: ${reason}`);
+    await sendMessage(ctx.peerId, `${userLink} замучен до ${endDateText}\nПричина: ${reason}\n\n⚠️ Примечание: VK API не поддерживает настоящий мут. Информация сохранена для отслеживания.`);
 
     // Логируем в Руководство (если команда не из руководства)
     if (ctx.peerId !== CHATS.rukovodstvo && CHATS.rukovodstvo > 0) {
@@ -1281,21 +1384,12 @@ async function cmdMute(ctx) {
       }
     }
 
-    // Устанавливаем таймер для автоматического размута
+    // Устанавливаем таймер для автоматического снятия мута из записей
     setTimeout(async () => {
       const stillMuted = isUserMuted(ctx.peerId, targetUserId);
       if (stillMuted) {
-        try {
-          await callVK('messages.setMemberRole', {
-            peer_id: ctx.peerId,
-            member_id: targetUserId,
-            role: 'member',
-          });
-          removeMute(ctx.peerId, targetUserId);
-          console.log('[VK Bot] Автоматически снят мут с пользователя', targetUserId, 'в чате', ctx.peerId);
-        } catch (error) {
-          console.error('[VK Bot] Ошибка автоматического размута:', error.message);
-        }
+        removeMute(ctx.peerId, targetUserId);
+        console.log('[VK Bot] Автоматически снят мут с пользователя', targetUserId, 'в чате', ctx.peerId);
       }
     }, duration * 60 * 1000);
   } catch (error) {
@@ -1339,20 +1433,17 @@ async function cmdUnmute(ctx) {
   }
 
   try {
-    // Снимаем ограничение через VK API
-    await callVK('messages.setMemberRole', {
-      peer_id: ctx.peerId,
-      member_id: targetUserId,
-      role: 'member',
-    });
-
     // Удаляем из локального хранилища
-    removeMute(ctx.peerId, targetUserId);
-
+    const wasRemoved = removeMute(ctx.peerId, targetUserId);
+    
     const user = await getUser(targetUserId);
     const userLink = user ? createUserLink(user) : `[id${targetUserId}|ID${targetUserId}]`;
-
-    await sendMessage(ctx.peerId, `С ${userLink} снят мут`);
+    
+    if (wasRemoved) {
+      await sendMessage(ctx.peerId, `С ${userLink} снят мут`);
+    } else {
+      await sendMessage(ctx.peerId, `${userLink} не был замучен в этом чате`);
+    }
   } catch (error) {
     console.error('[VK Bot] Ошибка размута:', error);
     await sendMessage(ctx.peerId, `Ошибка размута: ${error.message}`);
@@ -1413,35 +1504,56 @@ async function handleChatJoin(message) {
       console.log('[VK Bot] Пользователь', userId, 'автоматически кикнут (в ЧС)');
       return; // Не отправляем приветствие
     } catch (error) {
-      console.error('[VK Bot] Ошибка автокика пользователя из ЧС:', error.message);
+      console.error('[VK Bot] Ошибка автокика пользоват��ля из ЧС:', error.message);
     }
   }
 
   // Если пользователь не в ЧС - отправляем приветствие
+  console.log('[v0] Проверка приветствия для peer_id:', message.peer_id);
+  console.log('[v0] Доступные приветствия:', Array.from(storage.greetings.keys()));
+  
   const greeting = storage.greetings.get(message.peer_id);
+  console.log('[v0] Найденное приветствие:', greeting);
+  
   if (greeting) {
     // Обработка нового формата приветствий (с вложениями)
     if (typeof greeting === 'object' && greeting.text) {
       const welcomeText = greeting.text.replace('{user}', createUserLink(user));
+      console.log('[v0] Отправляем приветствие (объект):', welcomeText);
       await sendMessage(message.peer_id, welcomeText, {
         attachment: greeting.attachments?.join(',') || undefined
       });
     } else if (typeof greeting === 'string') {
       // Поддержка старого формата (только текст)
       const welcomeText = greeting.replace('{user}', createUserLink(user));
+      console.log('[v0] Отправляем приветствие (строка):', welcomeText);
       await sendMessage(message.peer_id, welcomeText);
     }
+  } else {
+    console.log('[v0] Приветствие не найдено для этого чата');
   }
 }
 
 // Обработка самолива
 async function handleChatLeave(message) {
   const userId = message.action.member_id;
+  const kickerId = message.from_id;
+  
+  // Проверяем, это кик администратором или самолив
+  // Если from_id != member_id, значит это кик (исключение администратором)
+  // Если from_id == member_id, значит это самолив (сам вышел)
+  if (kickerId !== userId) {
+    console.log('[VK Bot] Пользователь', userId, 'был исключен администратором', kickerId, '- не обрабатываем как самолив');
+    return; // Не обрабатываем как самолив
+  }
+  
   const user = await getUser(userId);
   if (!user) return;
-
+  
   const userLink = createUserLink(user);
-
+  
+  console.log('[VK Bot] Самолив пользователя', userId, userLink);
+  
   // Кикаем из всех чатов
   const allChats = Object.values(CHATS).filter(id => id > 0);
   for (const chatPeerId of allChats) {
@@ -1491,7 +1603,15 @@ async function handleChatLeave(message) {
 // Обработка нажатий на кнопки
 async function handleCallback(event) {
   try {
-    const payload = JSON.parse(event.object.payload);
+    console.log('[v0] handleCallback event.object:', JSON.stringify(event.object));
+    console.log('[v0] handleCallback payload type:', typeof event.object.payload);
+    console.log('[v0] handleCallback payload value:', event.object.payload);
+    
+    // payload может быть уже объектом или строкой JSON
+    const payload = typeof event.object.payload === 'string' 
+      ? JSON.parse(event.object.payload) 
+      : event.object.payload;
+      
     const peerId = event.object.peer_id;
     const userId = payload.userId;
     const user = await getUser(userId);
@@ -1514,7 +1634,7 @@ async function handleCallback(event) {
         await callVK('messages.edit', {
           peer_id: peerId,
           conversation_message_id: originalMessage,
-          message: `[${formatDateMSK()}] [САМОЛИВ]\n${userLink} покинул беседу\n\n✅ Обработано: добавлен в ЧС до ${banEndText}`,
+          message: `[${formatDateMSK()}] [САМОЛИВ]\n${userLink} покинул беседу\n\n✅ Обрабо��ано: добавлен в ЧС до ${banEndText}`,
         });
 
         await callVK('messages.sendMessageEventAnswer', {
@@ -1524,7 +1644,7 @@ async function handleCallback(event) {
         });
       } catch (error) {
         console.error('[VK Bot] Ошибка бана callback:', error.message);
-        await sendMessage(peerId, `Ошибка бана: ${error.message}`);
+        await sendMessage(peerId, `Ошибка бан��: ${error.message}`);
       }
     } else if (payload.action === 'return') {
       try {
@@ -1534,7 +1654,7 @@ async function handleCallback(event) {
         await callVK('messages.edit', {
           peer_id: peerId,
           conversation_message_id: originalMessage,
-          message: `[${formatDateMSK()}] [САМОЛИВ]\n${userLink} покинул беседу\n\n✅ Обработано: НЕ добавлен в ЧС`,
+          message: `[${formatDateMSK()}] [САМОЛИВ]\n${userLink} покинул бесед����\n\n✅ Обработано: НЕ добавлен в ЧС`,
         });
         
         await callVK('messages.sendMessageEventAnswer', {
@@ -1606,8 +1726,34 @@ async function handleEvent(event) {
     if (event.type === 'message_event') {
       await handleCallback(event);
     }
+    
+    // Обработка новых постов на стене группы 1 для автопересылки в доску объявлений
+    if (event.type === 'wall_post_new' && event.object) {
+      const post = event.object;
+      
+      // Проверяем, что пост из группы 1
+      if (Math.abs(post.owner_id) === parseInt(VK_GROUP1_ID)) {
+        console.log('[VK Bot] Обнаружен новый пост в группе 1, пересылаем в доску объявлений');
+        
+        // Пересылаем пост в доску объявлений
+        if (CHATS.doska && CHATS.doska > 0) {
+          try {
+            // Используем параметр forward для пересылки поста
+            const forwardAttachment = `wall${post.owner_id}_${post.id}`;
+            
+            await sendMessage(CHATS.doska, '', {
+              attachment: forwardAttachment
+            });
+            
+            console.log('[VK Bot] Пост успешно переслан в доску объявлений');
+          } catch (error) {
+            console.error('[VK Bot] Ошибка пересылки поста в доску объявлений:', error);
+          }
+        }
+      }
+    }
   } catch (error) {
-    console.error('[VK Bot] Ошибка обраб��тки события:', error);
+    console.error('[VK Bot] Ошибка обработки события:', error);
   }
 }
 
