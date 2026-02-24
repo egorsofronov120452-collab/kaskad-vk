@@ -73,7 +73,7 @@ const ROLE_CHATS = {
 const storage = {
   greetings: new Map(), // peer_id -> greeting_text
   localBlacklist: new Map(), // userId -> { endDate: timestamp, reason: string, bannedAt: timestamp, bannedBy: userId }
-  mutes: new Map(), // `${peerId}_${userId}` -> { endDate: timestamp, reason: string, mutedAt: timestamp, mutedBy: userId }
+  mutes: new Map(), // userId -> { endDate: timestamp, reason: string, mutedAt: timestamp, mutedBy: userId } (глобальный мут)
   pinnedMessages: new Map(), // peer_id -> conversation_message_id (для редактирования закрепленных сообщений)
 };
 
@@ -237,7 +237,8 @@ function saveMutes() {
 function addMute(peerId, userId, minutes, reason, mutedBy) {
   const now = Date.now();
   const endDate = now + minutes * 60 * 1000;
-  const key = `${peerId}_${userId}`;
+  // Мут теперь глобальный - привязан только к userId, а не к чату
+  const key = `${userId}`;
 
   storage.mutes.set(key, {
     endDate,
@@ -247,12 +248,12 @@ function addMute(peerId, userId, minutes, reason, mutedBy) {
   });
 
   saveMutes();
-  console.log('[VK Bot] Пользователь', userId, 'замучен в чате', peerId, 'до', formatBanEndDate(endDate));
+  console.log('[VK Bot] Пользователь', userId, 'замучен глобально до', formatBanEndDate(endDate));
 }
 
-// Проверка, замучен ли пользователь в чате
+// Проверка, замучен ли пользователь глобально
 function isUserMuted(peerId, userId) {
-  const key = `${peerId}_${userId}`;
+  const key = `${userId}`;
   const muteInfo = storage.mutes.get(key);
 
   if (!muteInfo) return null;
@@ -270,11 +271,11 @@ function isUserMuted(peerId, userId) {
 
 // Удаление мута
 function removeMute(peerId, userId) {
-  const key = `${peerId}_${userId}`;
+  const key = `${userId}`;
   const deleted = storage.mutes.delete(key);
   if (deleted) {
     saveMutes();
-    console.log('[VK Bot] Мут снят с пользователя', userId, 'в чате', peerId);
+    console.log('[VK Bot] Мут снят с пользователя', userId, 'глобально');
   }
   return deleted;
 }
@@ -352,14 +353,16 @@ async function callVK(method, params = {}, useGroup2 = false, useUserToken = fal
 
 async function sendMessage(peerId, message, params = {}) {
   try {
-    await callVK('messages.send', {
+    const response = await callVK('messages.send', {
       peer_id: peerId,
       message: message,
       random_id: Math.floor(Math.random() * 1000000000),
       ...params,
     });
+    return response; // Возвращаем conversation_message_id
   } catch (error) {
     console.error('[VK Bot] Ошибка отправки сообщения:', error.message);
+    return null;
   }
 }
 
@@ -509,38 +512,32 @@ function getChatName(peerId) {
 
 // Определяет роль пользователя на основе чата, откуда пришла команда
 function getRoleByChat(peerId) {
-  const chatId = peerIdToChatId(peerId);
-
-  // Если пишет в чате Руководства - значит РС
-  if (chatId === CHATS.rukovodstvo) return 'rs';
-
-  // Если пишет в чате СС - может быть РС или СС, проверим дополнительно
-  if (chatId === CHATS.ss) return 'ss';
-
-  // Если в других ча��ах - проверим по списку доступа
-  if (chatId === CHATS.fludilka || chatId === CHATS.dispetcherskaya || chatId === CHATS.zhurnal || chatId === CHATS.doska) {
-    return 'kurier'; // П�� умолчанию курьер, если есть доступ к эти�� чатам
-  }
-
-  if (chatId === CHATS.uchebny) return 'stazher';
-  if (chatId === CHATS.sponsor) return 'sponsor';
+  // Сравниваем peer_id напрямую (CHATS хранит peer_id, не chat_id)
+  if (peerId === CHATS.rukovodstvo) return 'rs';
+  if (peerId === CHATS.ss) return 'ss';
+  if (peerId === CHATS.fludilka || peerId === CHATS.dispetcherskaya || peerId === CHATS.zhurnal || peerId === CHATS.doska) return 'kurier';
+  if (peerId === CHATS.uchebny) return 'stazher';
+  if (peerId === CHATS.sponsor) return 'sponsor';
 
   return null;
 }
 
 // Проверяет права на основе роли из текущего чата
+// В чате Руководства (rs) - любая команда доступна всем кто там состоит
+// В чате СС (ss) - нужно быть РС чтобы иметь повышенные права
+// В остальных чатах - роль определяется по чату
 async function hasPermission(userId, peerId, requiredRoles) {
-  const role = getRoleByChat(peerId);
+  // Сначала пробуем определить реальную роль пользователя
+  const realRole = await getUserRole(userId);
+  if (realRole && requiredRoles.includes(realRole)) return true;
 
-  console.log(`[v0] Проверка прав: пользователь ${userId}, чат ${peerIdToChatId(peerId)}, роль: ${role}, требуется: ${requiredRoles.join('/')}`);
+  // Если реальная роль не подходит - проверяем по чату (фолбэк)
+  const chatRole = getRoleByChat(peerId);
+  if (chatRole && requiredRoles.includes(chatRole)) return true;
 
-  // Если роль не определена по чату - проверим является ли админом беседы
-  if (!role) {
-    const isAdmin = await isChatAdmin(peerId, userId);
-    if (isAdmin) return true;
-  }
-
-  return role && requiredRoles.includes(role);
+  // Проверяем является ли администратором беседы
+  const isAdmin = await isChatAdmin(peerId, userId);
+  return isAdmin;
 }
 
 // Проверка администратора беседы (владелец или админ VK)
@@ -561,28 +558,21 @@ async function getUserRole(userId) {
     // Получаем все беседы и проверяем в каких состоит пользователь
     const userChatIds = [];
 
-    console.log(`[v0] getUserRole для пользователя ${userId}`);
-
     for (const [chatName, chatPeerId] of Object.entries(CHATS)) {
       if (!chatPeerId || chatPeerId === 0) continue;
 
       try {
-        // chatPeerId уже является peer_id, не нужно преобразовывать
         const members = await callVK('messages.getConversationMembers', {
           peer_id: chatPeerId,
         });
         const isMember = members.items.some(m => m.member_id === userId);
-        console.log(`[v0] ${chatName} (peer_id=${chatPeerId}): пользователь ${isMember ? 'найден' : 'не найден'}`);
         if (isMember) {
           userChatIds.push(chatPeerId);
         }
       } catch (e) {
-        console.log(`[v0] ${chatName}: ошибка проверки - ${e.message}`);
         // Пропускаем чаты к которым нет доступа
       }
     }
-
-    console.log(`[v0] Пользователь состоит в чатах:`, userChatIds);
 
     // Определяем роль по приоритету
     if (userChatIds.includes(CHATS.rukovodstvo)) return 'rs';
@@ -1020,10 +1010,10 @@ async function cmdKick(ctx) {
     banDays = parseInt(ctx.args[2]) || 0;
   }
 
-  // Удаляем из всех чатов
-  const allChats = Object.values(CHATS).filter(id => id > 0);
+  // Удаляем из всех чатов (кроме спонсорской беседы)
+  const allChats = Object.values(CHATS).filter(id => id > 0 && id !== CHATS.sponsor);
   let removed = 0;
-
+  
   for (const chatPeerId of allChats) {
     try {
       await callVK('messages.removeChatUser', {
@@ -1051,7 +1041,7 @@ async function cmdKick(ctx) {
     banText = `. Занесён в ЧС до ${banEndText}`;
   }
 
-  await sendMessage(ctx.peerId, `${userLink} кикнут из всех чатов (удалён из ${removed})${banText}`);
+  await sendMessage(ctx.peerId, `${userLink} кик��������ут из всех чатов (удалён из ${removed})${banText}`);
 
   // Логируем в Руководство (только если команда была не из чата руководства)
   if (ctx.peerId !== CHATS.rukovodstvo && CHATS.rukovodstvo > 0) {
@@ -1076,34 +1066,93 @@ async function cmdChatInfo(ctx) {
   );
 }
 
+// Вспомогательная функция: упоминает список участников через удаляемые сообщения
+async function notifyMembers(peerId, userIds) {
+  const chunks = [];
+  for (let i = 0; i < userIds.length; i += 10) {
+    chunks.push(userIds.slice(i, i + 10));
+  }
+
+  for (const chunk of chunks) {
+    const mentions = chunk.map(id => `[id${id}|​]`).join(' ');
+    try {
+      const raw = await callVK('messages.send', {
+        peer_id: peerId,
+        message: mentions,
+        random_id: Math.floor(Math.random() * 1000000000),
+      });
+      // raw — conversation_message_id (число) или объект с ним
+      const cmid = typeof raw === 'object' && raw !== null
+        ? raw.conversation_message_id
+        : raw;
+      if (cmid !== undefined && cmid !== null) {
+        // Редактируем сообщение, заменяя упоминания на невидимый символ
+        await callVK('messages.edit', {
+          peer_id: peerId,
+          conversation_message_id: cmid,
+          message: '​', // zero-width space — VK принимает, но текст невидим
+        });
+      }
+    } catch (error) {
+      console.error('[VK Bot] Ошибка уведомления:', error.message);
+    }
+  }
+
+  return userIds.length;
+}
+
 // !увед - массовое уведомление
 async function cmdNotify(ctx) {
-  if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
-    await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
+  const senderRole = await getUserRole(ctx.userId);
+
+  // В чате РС — никто не может использовать !увед
+  if (ctx.peerId === CHATS.rukovodstvo) {
     return;
   }
 
-  try {
-    const members = await callVK('messages.getConversationMembers', {
-      peer_id: ctx.peerId,
-    });
+  // В чате СС — только РС, уведомляет только СС (без РС)
+  if (ctx.peerId === CHATS.ss) {
+    if (senderRole !== 'rs') return;
 
-    const userIds = members.items
-      .filter(item => item.member_id > 0)
+    try {
+      const members = await callVK('messages.getConversationMembers', { peer_id: ctx.peerId });
+
+      // Собираем ID всех участников чата СС, которые сами не являются РС
+      const rsMembers = await callVK('messages.getConversationMembers', { peer_id: CHATS.rukovodstvo });
+      const rsMemberIds = new Set(rsMembers.items.map(m => m.member_id));
+
+      const targetIds = members.items
+        .filter(item => item.member_id > 0 && !rsMemberIds.has(item.member_id))
+        .map(item => item.member_id);
+
+      const count = await notifyMembers(ctx.peerId, targetIds);
+      await sendMessage(ctx.peerId, `Отправлено уведомление ${count} участникам`);
+    } catch (error) {
+      await sendMessage(ctx.peerId, `Ошибка уведомления: ${error.message}`);
+    }
+    return;
+  }
+
+  // В остальных чатах — только РС или СС, уведомляет всех кроме РС/СС
+  if (senderRole !== 'rs' && senderRole !== 'ss') return;
+
+  try {
+    const members = await callVK('messages.getConversationMembers', { peer_id: ctx.peerId });
+
+    // Собираем ID РС и СС чтобы их исключить
+    const rsMembers = await callVK('messages.getConversationMembers', { peer_id: CHATS.rukovodstvo });
+    const ssMembers = await callVK('messages.getConversationMembers', { peer_id: CHATS.ss });
+    const privilegedIds = new Set([
+      ...rsMembers.items.map(m => m.member_id),
+      ...ssMembers.items.map(m => m.member_id),
+    ]);
+
+    const targetIds = members.items
+      .filter(item => item.member_id > 0 && !privilegedIds.has(item.member_id))
       .map(item => item.member_id);
 
-    // VK позволяет упоминать до 10 пользователей за раз
-    const chunks = [];
-    for (let i = 0; i < userIds.length; i += 10) {
-      chunks.push(userIds.slice(i, i + 10));
-    }
-
-    for (const chunk of chunks) {
-      const mentions = chunk.map(id => `[id${id}|.]`).join(' ');
-      await sendMessage(ctx.peerId, mentions);
-    }
-
-    await sendMessage(ctx.peerId, `Уведомлено ${userIds.length} участников`);
+    const count = await notifyMembers(ctx.peerId, targetIds);
+    await sendMessage(ctx.peerId, `Отправлено уведомление ${count} участникам`);
   } catch (error) {
     await sendMessage(ctx.peerId, `Ошибка уведомления: ${error.message}`);
   }
@@ -1196,7 +1245,7 @@ async function cmdBlacklist(ctx) {
       return;
     }
 
-    let list = `Локальный ЧС (${storage.localBlacklist.size} пользователей):\n\n`;
+    let list = `��окальный ЧС (${storage.localBlacklist.size} пользователей):\n\n`;
     let index = 1;
 
     for (const [userId, banInfo] of storage.localBlacklist.entries()) {
@@ -1205,7 +1254,7 @@ async function cmdBlacklist(ctx) {
       const banEndText = formatBanEndDate(banInfo.endDate);
       const bannedDate = formatDateMSK(banInfo.bannedAt);
 
-      // Получаем информацию о том, кто забанил
+      // Получаем информацию о том, кто за��анил
       let bannedByText = 'Неизвестно';
       if (banInfo.bannedBy) {
         const bannedByUser = await getUser(banInfo.bannedBy);
@@ -1287,10 +1336,19 @@ async function cmdBlacklist(ctx) {
 
 // !мут - мут пользователя в чате
 async function cmdMute(ctx) {
-  // Проверка доступа: СС и РС везде, но в чате СС только РС, в чате РС никто
-  if (ctx.peerId === CHATS.rukovodstvo) {
-    await sendMessage(ctx.peerId, 'В чате Руководства команда !мут недоступна');
-    return;
+  // Проверка доступа: СС и РС везде
+  if (ctx.peerId === CHATS.ss) {
+    // В чате СС только РС
+    if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs']))) {
+      await sendMessage(ctx.peerId, 'В чате СС команда доступна только РС');
+      return;
+    }
+  } else {
+    // В остальных чатах (включая Руководство) СС и РС
+    if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
+      await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
+      return;
+    }
   }
 
   if (ctx.peerId === CHATS.ss) {
@@ -1372,7 +1430,7 @@ async function cmdMute(ctx) {
     const endDate = Date.now() + duration * 60 * 1000;
     const endDateText = formatBanEndDate(endDate);
 
-    await sendMessage(ctx.peerId, `${userLink} замучен до ${endDateText}\nПричина: ${reason}\n\n⚠️ Примечание: VK API не поддерживает настоящий мут. Информация сохранена для отслеживания.`);
+    await sendMessage(ctx.peerId, `${userLink} замучен до ${endDateText}\nПричина: ${reason}\n\n⚠️ Мут действует во всех чатах. Все сообщения пользователя будут автома��ически удаляться.`);
 
     // Логируем в Руководство (если команда не из руководства)
     if (ctx.peerId !== CHATS.rukovodstvo && CHATS.rukovodstvo > 0) {
@@ -1400,12 +1458,7 @@ async function cmdMute(ctx) {
 
 // !размут - снятие мута с пользователя
 async function cmdUnmute(ctx) {
-  // Проверка доступа: СС и РС везде, но в чате СС только РС, в чате РС никто
-  if (ctx.peerId === CHATS.rukovodstvo) {
-    await sendMessage(ctx.peerId, 'В чате Руководства команда !размут недоступна');
-    return;
-  }
-
+  // Проверка доступа: СС и РС везде
   if (ctx.peerId === CHATS.ss) {
     if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs']))) {
       await sendMessage(ctx.peerId, 'В чате СС команда доступна только РС');
@@ -1440,9 +1493,9 @@ async function cmdUnmute(ctx) {
     const userLink = user ? createUserLink(user) : `[id${targetUserId}|ID${targetUserId}]`;
     
     if (wasRemoved) {
-      await sendMessage(ctx.peerId, `С ${userLink} снят мут`);
+      await sendMessage(ctx.peerId, `С ${userLink} снят мут во всех чатах`);
     } else {
-      await sendMessage(ctx.peerId, `${userLink} не был замучен в этом чате`);
+      await sendMessage(ctx.peerId, `${userLink} не был замучен`);
     }
   } catch (error) {
     console.error('[VK Bot] Ошибка размута:', error);
@@ -1552,7 +1605,7 @@ async function handleChatLeave(message) {
   
   const userLink = createUserLink(user);
   
-  console.log('[VK Bot] Самолив пользователя', userId, userLink);
+  console.log('[VK Bot] Самолив пол��зователя', userId, userLink);
   
   // Кикаем из всех чатов
   const allChats = Object.values(CHATS).filter(id => id > 0);
@@ -1689,15 +1742,21 @@ async function handleEvent(event) {
         return;
       }
 
-      // Проверка на мут - если мут истек, снимаем ограничение
+      // Проверка на мут - если пользователь замучен, удаляем сообщение
       const muteInfo = isUserMuted(message.peer_id, message.from_id);
-      if (muteInfo === null) {
-        // Проверяем, был ли у пользователя мут ранее (на случай истечения)
-        // Если был - восстанавливаем права
-        const key = `${message.peer_id}_${message.from_id}`;
-        if (storage.mutes.has(key) === false) {
-          // Пользователь не замучен, все в порядке
+      if (muteInfo !== null) {
+        // Пользователь замучен - удаляем его сообщение
+        try {
+          await callVK('messages.delete', {
+            peer_id: message.peer_id,
+            delete_for_all: 1,
+            cmids: message.conversation_message_id,
+          });
+          console.log(`[VK Bot] Удалено сообщение от замученного пользователя ${message.from_id} в чате ${message.peer_id}`);
+        } catch (error) {
+          console.error('[VK Bot] Ошибка удаления сообщения замученного пользователя:', error.message);
         }
+        return; // Не обрабатываем команды от замученных пользователей
       }
 
       // Обработка команд
@@ -1735,7 +1794,7 @@ async function handleEvent(event) {
       if (Math.abs(post.owner_id) === parseInt(VK_GROUP1_ID)) {
         console.log('[VK Bot] Обнаружен новый пост в группе 1, пересылаем в доску объявлений');
         
-        // Пересылаем пост в доску объявлений
+        // Пересылаем пост в доску объяв��ений
         if (CHATS.doska && CHATS.doska > 0) {
           try {
             // Используем параметр forward для пересылки поста
@@ -1803,6 +1862,29 @@ async function startLongPolling() {
       }
     }
   }
+}
+
+// HTTP-сервер для Render.com (требует открытого порта)
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || '';
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('VK Bot is running\n');
+});
+
+server.listen(PORT, () => {
+  console.log(`[VK Bot] HTTP-сервер запущен на порту ${PORT}`);
+});
+
+// Само-пинг каждые 10 минут чтобы Render не усыплял процесс
+if (RENDER_URL) {
+  setInterval(() => {
+    fetch(RENDER_URL)
+      .then(() => console.log('[VK Bot] Keepalive ping отправлен'))
+      .catch((err) => console.error('[VK Bot] Keepalive ping ошибка:', err.message));
+  }, 10 * 60 * 1000);
 }
 
 // Обработка завершения
