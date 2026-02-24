@@ -1,5 +1,5 @@
 services:
-  - type: web
+  - type: worker
     name: kaskad-vk-bot
     runtime: node
     buildCommand: npm install
