@@ -1,0 +1,8 @@
+app = "kaskad-vk-bot"
+primary_region = "ams"
+
+[processes]
+  app = "node scripts/long-polling.cjs"
+
+[deploy]
+  strategy = "immediate"
