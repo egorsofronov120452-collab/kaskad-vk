@@ -74,7 +74,7 @@ export async function reuploadPhotoToGroup(
     const sizes: any[] = photoAttachment.sizes || [];
     if (!sizes.length) return null;
 
-    sizes.sort((a, b) => b.width * b.height - a.width * a.height);
+    sizes.sort((a: any, b: any) => b.width * b.height - a.width * a.height);
     const photoUrl = sizes[0].url;
 
     const photoRes = await fetch(photoUrl);
@@ -86,7 +86,6 @@ export async function reuploadPhotoToGroup(
       useGroup2,
     );
 
-    // Используем native FormData (доступен в Node 18+)
     const formData = new FormData();
     formData.append(
       'photo',
