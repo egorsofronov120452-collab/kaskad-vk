@@ -61,14 +61,22 @@ export function getChatIdByAlias(alias: string): number | undefined {
 }
 
 export function extractUserId(link: string): number | null {
+  // Чистим строку от пробелов
+  const s = link.trim();
   const patterns = [
+    // VK mention format: [id123|Имя] или [id123|\u200b]
+    /^\[id(\d+)\|/,
+    // URL: https://vk.com/id123
     /vk\.com\/id(\d+)/,
+    // Старый формат с vk.com внутри скобок: [vk.com/id123|...]
     /\[vk\.com\/id(\d+)\|/,
-    /^id(\d+)$/,
+    // Просто: id123
+    /^id(\d+)$/i,
+    // Просто число
     /^(\d+)$/,
   ];
   for (const p of patterns) {
-    const m = link.match(p);
+    const m = s.match(p);
     if (m) return parseInt(m[1]);
   }
   return null;

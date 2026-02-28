@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { after } from 'next/server';
 import { VK_CALLBACK_SECRET, VK_CONFIRMATION_TOKEN } from '@/lib/bot/config';
 import { handleEvent } from '@/lib/bot/events';
 
 export const runtime = 'nodejs';
+// Vercel максимальное время выполнения serverless функции
+export const maxDuration = 60;
 
 // VK шлёт POST на этот endpoint
 export async function POST(req: NextRequest) {
@@ -20,7 +23,10 @@ export async function POST(req: NextRequest) {
       console.error('[Bot] VK_CONFIRMATION_TOKEN не задан!');
       return new NextResponse('error', { status: 500 });
     }
-    return new NextResponse(VK_CONFIRMATION_TOKEN, { status: 200 });
+    return new NextResponse(VK_CONFIRMATION_TOKEN, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
   }
 
   // 2. Проверка секрета
@@ -28,16 +34,19 @@ export async function POST(req: NextRequest) {
     return new NextResponse('forbidden', { status: 403 });
   }
 
-  // 3. Обрабатываем событие асинхронно — VK ждёт ответ "ok" как можно быстрее
-  // Используем waitUntil если доступен, иначе просто не ждём
-  const handler = handleEvent(body).catch(err =>
-    console.error('[Bot] Необработанная ошибка события:', err),
-  );
+  // 3. Запускаем обработку события ПОСЛЕ отправки ответа "ok" в VK.
+  //    after() гарантирует выполнение фоновой задачи уже после того,
+  //    как ответ отправлен клиенту (VK получает "ok" мгновенно).
+  after(async () => {
+    try {
+      await handleEvent(body);
+    } catch (err: any) {
+      console.error('[Bot] Необработанная ошибка события:', err.message);
+    }
+  });
 
-  // В Next.js App Router можно использовать ctx.waitUntil через NextFetchEvent,
-  // но для простоты запускаем и не ждём — Vercel serverless продолжит выполнение
-  // пока не закроется соединение
-  await handler;
-
-  return new NextResponse('ok', { status: 200 });
+  return new NextResponse('ok', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  });
 }
