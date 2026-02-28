@@ -1,4 +1,4 @@
-// Серверный компонент — process.env читается только на сервере
+// async Server Component — рендерится только на сервере, нет hydration mismatch
 export const dynamic = 'force-dynamic';
 
 const COMMANDS = [
@@ -15,7 +15,7 @@ const COMMANDS = [
   { cmd: '!чат', desc: 'Информация о текущем чате' },
 ];
 
-const CHAT_ALIASES = [
+const CHAT_ALIASES: [string, string][] = [
   ['рс', 'Руководство'],
   ['сс', 'Старший Состав'],
   ['уц', 'Учебный Центр'],
@@ -24,7 +24,7 @@ const CHAT_ALIASES = [
   ['флуд', 'Флудилка'],
   ['жа', 'Журнал Активности'],
   ['спонсор', 'Спонсорская'],
-] as const;
+];
 
 const ENV_VARS = [
   'VK_GROUP1_TOKEN',
@@ -37,7 +37,7 @@ const ENV_VARS = [
   'DATABASE_URL',
 ] as const;
 
-const CHAT_ENV_VARS = [
+const CHAT_ENV_VARS: [string, string][] = [
   ['VK_CHAT_RUKOVODSTVO_ID', 'Руководство'],
   ['VK_CHAT_SS_ID', 'Старший Состав'],
   ['VK_CHAT_UCHEBNY_ID', 'Учебный Центр'],
@@ -46,7 +46,7 @@ const CHAT_ENV_VARS = [
   ['VK_CHAT_FLUDILKA_ID', 'Флудилка'],
   ['VK_CHAT_ZHURNAL_ID', 'Журнал Активности'],
   ['VK_CHAT_SPONSOR_ID', 'Спонсорская'],
-] as const;
+];
 
 function Badge({ ok }: { ok: boolean }) {
   return (
@@ -60,7 +60,8 @@ function Badge({ ok }: { ok: boolean }) {
   );
 }
 
-export default function Home() {
+// async — чтобы компонент точно был Server Component и не гидрировался на клиенте
+export default async function Home() {
   const envStatus = ENV_VARS.map((key) => ({
     label: key,
     isSet: Boolean(process.env[key]),
@@ -68,7 +69,7 @@ export default function Home() {
 
   const chatStatus = CHAT_ENV_VARS.map(([envKey, label]) => ({
     label,
-    peerId: process.env[envKey] || '',
+    peerId: process.env[envKey] ?? '',
   }));
 
   const chatsSet = chatStatus.filter((c) => Boolean(c.peerId)).length;
@@ -84,7 +85,7 @@ export default function Home() {
             <span className="text-xs uppercase tracking-widest text-[#4ade80] font-semibold">Online</span>
           </div>
           <h1 className="text-3xl font-bold text-white tracking-tight">Kaskad VK Bot</h1>
-          <p className="text-[#64748b] mt-1 text-sm">VK Callback API &mdash; Next.js 16 + Neon Postgres</p>
+          <p className="text-[#64748b] mt-1 text-sm">VK Callback API — Next.js 16 + Neon Postgres</p>
         </div>
 
         {/* Callback endpoint */}
@@ -129,7 +130,7 @@ export default function Home() {
               >
                 <span className="text-sm text-[#cbd5e1]">{label}</span>
                 <span className={`text-xs font-mono ${peerId ? 'text-[#4ade80]' : 'text-[#475569]'}`}>
-                  {peerId || '\u2014'}
+                  {peerId || '—'}
                 </span>
               </div>
             ))}
@@ -165,7 +166,7 @@ export default function Home() {
 
         {/* Footer */}
         <p className="text-center text-xs text-[#334155]">
-          Kaskad VK Bot &middot; Next.js 16 + Neon &middot; VK Callback API
+          Kaskad VK Bot · Next.js 16 + Neon · VK Callback API
         </p>
       </div>
     </main>
