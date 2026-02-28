@@ -22,6 +22,26 @@ import {
   addMute,
   removeMute,
   setGreeting,
+  // v2
+  upsertUser,
+  getEmployee,
+  registerEmployee,
+  setUserNickname,
+  setUserBankAccount,
+  getEmployeeCars,
+  getAllCars,
+  addEmployeeCar,
+  getCategories,
+  getCategoryById,
+  getProductsByCategory,
+  createCategory,
+  createProduct,
+  createPromoCode,
+  openActivitySession,
+  closeActivitySession,
+  getCurrentOnlineList,
+  getOnlineStatsForUser,
+  getOnlineRankThisWeek,
 } from './db';
 
 export interface BotCtx {
@@ -714,6 +734,259 @@ export async function cmdUnmute(ctx: BotCtx) {
   );
 }
 
+// ============= !онлайн / !афк / !вышел =============
+// Только в чате Журнала Активности
+async function requireZhurnal(ctx: BotCtx): Promise<boolean> {
+  if (ctx.peerId !== CHATS.zhurnal) {
+    await sendMessage(ctx.peerId, 'Команды активности доступны только в Журнале Активности');
+    return false;
+  }
+  return true;
+}
+
+function buildOnlineListText(list: any[], changedNickname: string, newStatus: string, activityText: string): string {
+  const header = `${changedNickname} ${newStatus === 'online' ? 'в сети' : newStatus === 'afk' ? 'отошёл' : 'вышел'}.${activityText ? ` (${activityText})` : ''}`;
+  const roleOrder = ['РС', 'СС', 'Курьер', 'Стажёр'];
+  const roleMap: Record<string, string> = { rs: 'РС', ss: 'СС', kurier: 'Курьер', stazher: 'Стажёр' };
+  const sorted = [...list].sort((a, b) => {
+    const ra = roleOrder.indexOf(roleMap[a.role] ?? 'Курьер');
+    const rb = roleOrder.indexOf(roleMap[b.role] ?? 'Курьер');
+    return ra - rb;
+  });
+  if (!sorted.length) return header;
+  const lines = sorted.map(u => `${u.nickname ?? `ID${u.vk_id}`} (${roleMap[u.role] ?? u.role}) ${u.activity_text}`);
+  return `${header}\nНа сервере:\n${lines.join('\n')}`;
+}
+
+export async function cmdOnline(ctx: BotCtx) {
+  if (!(await requireZhurnal(ctx))) return;
+  const activityText = ctx.args.slice(1).join(' ') || (
+    (await getUserRole(ctx.userId)) === 'stazher' ? 'экзамен' : 'доставка'
+  );
+  const user = await getUser(ctx.userId);
+  await upsertUser(ctx.userId, user?.first_name ?? '', user?.last_name ?? '');
+  const emp = await getEmployee(ctx.userId);
+  const nickname = emp?.nickname ?? user?.first_name ?? `ID${ctx.userId}`;
+  await openActivitySession(ctx.userId, 'online', activityText);
+  const list = await getCurrentOnlineList();
+  await sendMessage(ctx.peerId, buildOnlineListText(list, nickname, 'online', activityText));
+}
+
+export async function cmdAfk(ctx: BotCtx) {
+  if (!(await requireZhurnal(ctx))) return;
+  const activityText = ctx.args.slice(1).join(' ') || 'Не у ПК';
+  const user = await getUser(ctx.userId);
+  await upsertUser(ctx.userId, user?.first_name ?? '', user?.last_name ?? '');
+  const emp = await getEmployee(ctx.userId);
+  const nickname = emp?.nickname ?? user?.first_name ?? `ID${ctx.userId}`;
+  await openActivitySession(ctx.userId, 'afk', activityText);
+  const list = await getCurrentOnlineList();
+  await sendMessage(ctx.peerId, buildOnlineListText(list, nickname, 'afk', activityText));
+}
+
+export async function cmdVyshel(ctx: BotCtx) {
+  if (!(await requireZhurnal(ctx))) return;
+  const user = await getUser(ctx.userId);
+  await upsertUser(ctx.userId, user?.first_name ?? '', user?.last_name ?? '');
+  const emp = await getEmployee(ctx.userId);
+  const nickname = emp?.nickname ?? user?.first_name ?? `ID${ctx.userId}`;
+  await closeActivitySession(ctx.userId);
+  const list = await getCurrentOnlineList();
+  await sendMessage(ctx.peerId, buildOnlineListText(list, nickname, 'offline', ''));
+}
+
+// ============= !стата =============
+export async function cmdStata(ctx: BotCtx) {
+  const user = await getUser(ctx.userId);
+  const emp  = await getEmployee(ctx.userId);
+  const nickname = emp?.nickname ?? user?.first_name ?? `ID${ctx.userId}`;
+  const stats = await getOnlineStatsForUser(ctx.userId, 7);
+  const todayMin = stats[0]?.total_minutes ?? 0;
+  const weekMin  = stats.reduce((s: number, r: any) => s + r.total_minutes, 0);
+  const rank     = await getOnlineRankThisWeek(ctx.userId);
+  const fmt = (m: number) => `${Math.floor(m / 60)}ч. ${m % 60}м.`;
+  const online = await getCurrentOnlineList();
+  const totalOnline = online.length;
+  await sendMessage(
+    ctx.peerId,
+    `Статистика ${nickname}:\nОнлайн сегодня: ${fmt(todayMin)}\nОнлайн за неделю: ${fmt(weekMin)}\nТоп по онлайну за неделю: ${rank > 0 ? `${rank} место` : 'нет данных'}\nСейчас в сети: ${totalOnline} чел.`,
+  );
+}
+
+// ============= !профиль =============
+export async function cmdProfile(ctx: BotCtx) {
+  // Кому смотреть — себе или другому (только РС/СС)
+  let targetId = ctx.userId;
+  if (ctx.replyMessage) {
+    if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
+      await sendMessage(ctx.peerId, 'Просмотр чужого профиля доступен только РС и СС');
+      return;
+    }
+    targetId = ctx.replyMessage.from_id;
+  }
+
+  const user = await getUser(targetId);
+  const emp  = await getEmployee(targetId);
+  if (!emp) {
+    await sendMessage(ctx.peerId, `Сотрудник ID${targetId} не зарегистрирован в боте.`);
+    return;
+  }
+  const cars  = await getEmployeeCars(targetId);
+  const stats = await getOnlineStatsForUser(targetId, 7);
+  const weekMin = stats.reduce((s: number, r: any) => s + r.total_minutes, 0);
+  const fmt = (m: number) => `${Math.floor(m / 60)}ч. ${m % 60}м.`;
+  const carLines = cars.length
+    ? cars.map((c: any) => `• ${c.car_name}${c.is_colored ? ' [в цветах]' : ''}${c.is_org_car ? ' (орг.)' : ' (личное)'}`).join('\n')
+    : 'Нет машин';
+
+  await sendMessage(
+    ctx.peerId,
+    `Профиль: ${emp.nickname ?? (user ? `${user.first_name} ${user.last_name}` : `ID${targetId}`)}\nРоль: ${emp.role ?? 'не указана'}\nБанк. счёт: ${emp.bankAccount ?? 'не указан'}\nОнлайн за неделю: ${fmt(weekMin)}\nАвтопарк:\n${carLines}`,
+  );
+}
+
+// ============= !авто =============
+export async function cmdAvto(ctx: BotCtx) {
+  const emp = await getEmployee(ctx.userId);
+  if (!emp) {
+    await sendMessage(ctx.peerId, 'Сначала зарегистрируйтесь: пишите боту сообщества 1 в личные сообщения.');
+    return;
+  }
+
+  const subCmd = ctx.args[1]?.toLowerCase();
+
+  if (!subCmd || subCmd === 'список') {
+    const cars = await getEmployeeCars(ctx.userId);
+    if (!cars.length) {
+      await sendMessage(ctx.peerId, 'У вас нет добавленных машин.\nДобавьте: !авто добавить [название]\nОрг. авто: !авто орг [название]');
+      return;
+    }
+    const lines = cars.map((c: any) => `• ${c.car_name}${c.is_colored ? ' [в цветах]' : ''}${c.is_org_car ? ' (орг.)' : ' (личное)'}`);
+    await sendMessage(ctx.peerId, `Ваш автопарк:\n${lines.join('\n')}`);
+    return;
+  }
+
+  if (subCmd === 'добавить' || subCmd === 'орг') {
+    const carName = ctx.args.slice(2).join(' ');
+    if (!carName) {
+      await sendMessage(ctx.peerId, `Использование: !авто ${subCmd} [название]`);
+      return;
+    }
+    const allCars = await getAllCars(subCmd === 'орг');
+    const found = allCars.find(c => c.name.toLowerCase() === carName.toLowerCase());
+    if (!found) {
+      await sendMessage(ctx.peerId, `Машина "${carName}" не найдена. Доступные: ${allCars.map(c => c.name).join(', ') || 'нет'}`);
+      return;
+    }
+    const isOrg = subCmd === 'орг';
+    const photo = ctx.message.attachments?.find((a: any) => a.type === 'photo');
+    const photoId = photo?.photo ? `photo${photo.photo.owner_id}_${photo.photo.id}` : null;
+    await addEmployeeCar(ctx.userId, found.id, isOrg, false, photoId);
+    await sendMessage(ctx.peerId, `Машина "${found.name}" добавлена в ваш автопарк.`);
+    return;
+  }
+
+  await sendMessage(ctx.peerId, 'Использование: !авто | !авто добавить [название] | !авто орг [название]');
+}
+
+// ============= !категория =============
+export async function cmdKategoriya(ctx: BotCtx) {
+  if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
+    await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
+    return;
+  }
+  const subCmd = ctx.args[1]?.toLowerCase();
+
+  if (!subCmd || subCmd === 'список') {
+    const cats = await getCategories(null);
+    if (!cats.length) { await sendMessage(ctx.peerId, 'Категории не добавлены.'); return; }
+    const lines = cats.map(c => `[${c.id}] ${c.name} (${c.type})`);
+    await sendMessage(ctx.peerId, `Категории:\n${lines.join('\n')}`);
+    return;
+  }
+
+  if (subCmd === 'добавить') {
+    // !категория добавить [название] [тип: сет|категория]
+    const name = ctx.args[2];
+    const type = ctx.args[3]?.toLowerCase() === 'сет' ? 'set' : 'category';
+    if (!name) { await sendMessage(ctx.peerId, 'Использование: !категория добавить [название] [тип: сет|категория]'); return; }
+    const photo = ctx.message.attachments?.find((a: any) => a.type === 'photo');
+    const photoId = photo?.photo ? `photo${photo.photo.owner_id}_${photo.photo.id}` : null;
+    const cat = await createCategory(name, type, null, photoId, ctx.userId);
+    await sendMessage(ctx.peerId, `Категория "${cat.name}" добавлена (ID: ${cat.id}).`);
+    return;
+  }
+
+  await sendMessage(ctx.peerId, 'Использование: !категория список | !категория добавить [название] [тип]');
+}
+
+// ============= !товар =============
+export async function cmdTovar(ctx: BotCtx) {
+  if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
+    await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
+    return;
+  }
+  const subCmd = ctx.args[1]?.toLowerCase();
+
+  if (!subCmd || subCmd === 'список') {
+    const catId = ctx.args[2] ? parseInt(ctx.args[2]) : null;
+    if (!catId) { await sendMessage(ctx.peerId, 'Использование: !товар список [ID категории]'); return; }
+    const products = await getProductsByCategory(catId);
+    if (!products.length) { await sendMessage(ctx.peerId, 'Товары не найдены.'); return; }
+    const lines = products.map(p => `[${p.id}] ${p.name} | ${p.price}р. (с/с: ${p.costPrice}р.)`);
+    await sendMessage(ctx.peerId, `Товары категории ${catId}:\n${lines.join('\n')}`);
+    return;
+  }
+
+  if (subCmd === 'добавить') {
+    // !товар добавить [catId] [цена] [себестоимость] [название...]
+    const catId     = parseInt(ctx.args[2] ?? '0');
+    const price     = parseInt(ctx.args[3] ?? '0');
+    const costPrice = parseInt(ctx.args[4] ?? '0');
+    const name      = ctx.args.slice(5).join(' ');
+    if (!catId || !price || !costPrice || !name) {
+      await sendMessage(ctx.peerId, 'Использование: !товар добавить [ID категории] [цена] [себестоимость] [название]');
+      return;
+    }
+    const photo = ctx.message.attachments?.find((a: any) => a.type === 'photo');
+    const photoId = photo?.photo ? `photo${photo.photo.owner_id}_${photo.photo.id}` : null;
+    const product = await createProduct(catId, name, price, costPrice, photoId, ctx.userId);
+    await sendMessage(ctx.peerId, `Товар "${product.name}" добавлен (ID: ${product.id}).`);
+    return;
+  }
+
+  await sendMessage(ctx.peerId, 'Использование: !товар список [catId] | !товар добавить [catId] [цена] [с/с] [название]');
+}
+
+// ============= !промокод =============
+export async function cmdPromokod(ctx: BotCtx) {
+  if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
+    await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
+    return;
+  }
+  const subCmd = ctx.args[1]?.toLowerCase();
+
+  if (subCmd === 'создать') {
+    // !промокод создать [код] [скидка%] [макс. использований] [дней действия]
+    const code        = ctx.args[2]?.toUpperCase();
+    const discount    = parseInt(ctx.args[3] ?? '0');
+    const maxUses     = ctx.args[4] ? parseInt(ctx.args[4]) : null;
+    const days        = ctx.args[5] ? parseInt(ctx.args[5]) : null;
+    if (!code || !discount || discount < 1 || discount > 100) {
+      await sendMessage(ctx.peerId, 'Использование: !промокод создать [КОД] [скидка%] [макс.использований] [дней действия]');
+      return;
+    }
+    const expiresAt = days ? Date.now() + days * 86400000 : null;
+    await createPromoCode(code, discount, maxUses, ctx.userId, expiresAt);
+    const exp = days ? `, действует ${days} дн.` : '';
+    const uses = maxUses ? `, макс. ${maxUses} раз` : '';
+    await sendMessage(ctx.peerId, `Промокод ${code} создан: скидка ${discount}%${uses}${exp}.`);
+    return;
+  }
+
+  await sendMessage(ctx.peerId, 'Использование: !промокод создать [КОД] [скидка%] [макс.использований] [дней действия]');
+}
+
 // ============= Маппинг команд =============
 export const commands: Record<string, (ctx: BotCtx) => Promise<void>> = {
   'пост':        cmdPost,
@@ -727,4 +1000,17 @@ export const commands: Record<string, (ctx: BotCtx) => Promise<void>> = {
   'чс':          cmdBlacklist,
   'мут':         cmdMute,
   'размут':      cmdUnmute,
+  // v2 — активность
+  'онлайн':      cmdOnline,
+  'афк':         cmdAfk,
+  'вышел':       cmdVyshel,
+  'стата':       cmdStata,
+  // v2 — профиль и авто
+  'профиль':     cmdProfile,
+  'авто':        cmdAvto,
+  // v2 — каталог
+  'категория':   cmdKategoriya,
+  'товар':       cmdTovar,
+  // v2 — промокоды
+  'промокод':    cmdPromokod,
 };
