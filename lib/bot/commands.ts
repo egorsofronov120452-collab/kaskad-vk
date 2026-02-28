@@ -38,25 +38,45 @@ export async function cmdPost(ctx: BotCtx) {
     await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
     return;
   }
-  if (!ctx.replyMessage) {
-    await sendMessage(ctx.peerId, 'Ответьте на сообщение, которое нужно опубликовать');
+
+  // Принимаем команду, если есть reply ИЛИ прикреплённые фото к самому сообщению
+  const cmdAttachments: any[] = ctx.message.attachments ?? [];
+  if (!ctx.replyMessage && cmdAttachments.length === 0) {
+    await sendMessage(
+      ctx.peerId,
+      'Ответьте на сообщение или прикрепите фото к команде !пост [текст]',
+    );
     return;
   }
 
   try {
-    const msg = ctx.replyMessage;
-    const text = msg.text || '';
-    const rawAtts: string[] = collectAttachments(msg.attachments ?? []);
+    // Текст: из reply или из аргументов после команды
+    const text = ctx.replyMessage
+      ? ctx.replyMessage.text || ''
+      : ctx.args.slice(1).join(' ');
 
-    // Переливаем фото в группу 2
+    // Вложения из reply-сообщения
+    const replyAtts: any[] = ctx.replyMessage?.attachments ?? [];
+    const rawAtts: string[] = collectAttachments(replyAtts);
+
     const attachments: string[] = [];
-    for (const att of msg.attachments ?? []) {
+
+    // Обрабатываем вложения из reply
+    for (const att of replyAtts) {
       if (att.type === 'photo' && att.photo) {
         const id = await reuploadPhotoToGroup(att.photo, VK_GROUP2_ID, true);
         if (id) attachments.push(id);
       } else {
         const plain = rawAtts.find(a => a.startsWith(att.type));
         if (plain) attachments.push(plain);
+      }
+    }
+
+    // Обрабатываем фото, прикреплённые к самому сообщению с командой
+    for (const att of cmdAttachments) {
+      if (att.type === 'photo' && att.photo) {
+        const id = await reuploadPhotoToGroup(att.photo, VK_GROUP2_ID, true);
+        if (id) attachments.push(id);
       }
     }
 
@@ -80,23 +100,42 @@ export async function cmdPrikaz(ctx: BotCtx) {
     await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
     return;
   }
-  if (!ctx.replyMessage) {
-    await sendMessage(ctx.peerId, 'Ответьте на сообщение, которое нужно опубликовать');
+
+  // Принимаем команду, если есть reply ИЛИ прикреплённые фото к самому сообщению
+  const cmdAttachments: any[] = ctx.message.attachments ?? [];
+  if (!ctx.replyMessage && cmdAttachments.length === 0) {
+    await sendMessage(
+      ctx.peerId,
+      'Ответьте на сообщение или прикрепите фото к команде !приказ [текст]',
+    );
     return;
   }
 
   try {
-    const msg = ctx.replyMessage;
-    const text = msg.text || '';
+    // Текст: из reply или из аргументов после команды
+    const text = ctx.replyMessage
+      ? ctx.replyMessage.text || ''
+      : ctx.args.slice(1).join(' ');
+
+    // Вложения из reply-сообщения
+    const replyAtts: any[] = ctx.replyMessage?.attachments ?? [];
     const attachments: string[] = [];
 
-    for (const att of msg.attachments ?? []) {
+    for (const att of replyAtts) {
       if (att.type === 'photo' && att.photo) {
         const id = await reuploadPhotoToGroup(att.photo, VK_GROUP1_ID, false);
         if (id) attachments.push(id);
       } else {
         const ids = collectAttachments([att]);
         attachments.push(...ids);
+      }
+    }
+
+    // Обрабатываем фото, прикреплённые к самому сообщению с командой
+    for (const att of cmdAttachments) {
+      if (att.type === 'photo' && att.photo) {
+        const id = await reuploadPhotoToGroup(att.photo, VK_GROUP1_ID, false);
+        if (id) attachments.push(id);
       }
     }
 

@@ -597,19 +597,25 @@ async function cmdPost(ctx) {
     return;
   }
 
-  if (!ctx.replyMessage) {
-    await sendMessage(ctx.peerId, 'Ответьте на сообщение, которое нужно опубликовать');
+  // Принимаем команду, если есть reply ИЛИ прикреплённые фото к самому сообщению
+  const cmdAttachments = ctx.message.attachments || [];
+  if (!ctx.replyMessage && cmdAttachments.length === 0) {
+    await sendMessage(ctx.peerId, 'Ответьте на сообщение или прикрепите фото к команде !пост [текст]');
     return;
   }
 
   try {
-    const msg = ctx.replyMessage;
-    const text = msg.text || '';
+    // Текст: из reply или из аргументов после команды
+    const text = ctx.replyMessage
+      ? (ctx.replyMessage.text || '')
+      : ctx.args.slice(1).join(' ');
+
     const attachments = [];
 
-    // Собираем вложения
-    if (msg.attachments) {
-      for (const att of msg.attachments) {
+    // Собираем вложения из reply-сообщения
+    const replyAtts = ctx.replyMessage ? (ctx.replyMessage.attachments || []) : [];
+    if (replyAtts.length > 0) {
+      for (const att of replyAtts) {
         if (att.type === 'photo') {
           // Фото из личных сообщений нужно перезагрузить в группу
           if (att.photo) {
@@ -643,6 +649,16 @@ async function cmdPost(ctx) {
       }
     }
 
+    // Фото, прикреплённые к самому сообщению с командой
+    for (const att of cmdAttachments) {
+      if (att.type === 'photo' && att.photo) {
+        const reuploadedPhotoId = await reuploadPhotoToGroup(att.photo, VK_GROUP2_ID, true);
+        if (reuploadedPhotoId) {
+          attachments.push(reuploadedPhotoId);
+        }
+      }
+    }
+
     // Публикуем на стену группы 2
     const postParams = {
       owner_id: -VK_GROUP2_ID,
@@ -654,7 +670,7 @@ async function cmdPost(ctx) {
       postParams.attachments = attachments.join(',');
     }
 
-    const result = await callVK('wall.post', postParams, true);
+    await callVK('wall.post', postParams, true);
 
     await sendMessage(ctx.peerId, 'Пост успешно опубликован в группе');
   } catch (error) {
@@ -671,58 +687,65 @@ async function cmdPrikaz(ctx) {
     return;
   }
 
-  if (!ctx.replyMessage) {
-    await sendMessage(ctx.peerId, 'Ответьте на сообщение, которое нужно опубликовать');
+  // Принимаем команду, если есть reply ИЛИ прикреплённые фото к самому сообщению
+  const cmdAttachments = ctx.message.attachments || [];
+  if (!ctx.replyMessage && cmdAttachments.length === 0) {
+    await sendMessage(ctx.peerId, 'Ответьте на сообщение или прикрепите фото к команде !приказ [текст]');
     return;
   }
 
   try {
-    // Пересылаем сообщение на стену группы 1 в доску объявлений
-    // В VK API нет прямого способа переслать в доску объявлений
-    // Но можно создать пост с тем же содержимым
-    const msg = ctx.replyMessage;
-    const text = msg.text || '';
+    // Текст: из reply или из аргументов после команды
+    const text = ctx.replyMessage
+      ? (ctx.replyMessage.text || '')
+      : ctx.args.slice(1).join(' ');
+
     const attachments = [];
 
-    // Собираем вложения
-    if (msg.attachments) {
-      for (const att of msg.attachments) {
-        if (att.type === 'photo') {
-          // Фото из личных сообщений нужно перезагрузить в группу
-          if (att.photo) {
-            const reuploadedPhotoId = await reuploadPhotoToGroup(att.photo, VK_GROUP1_ID, false);
-            if (reuploadedPhotoId) {
-              attachments.push(reuploadedPhotoId);
-            }
+    // Собираем вложения из reply-сообщения
+    const replyAtts = ctx.replyMessage ? (ctx.replyMessage.attachments || []) : [];
+    for (const att of replyAtts) {
+      if (att.type === 'photo') {
+        if (att.photo) {
+          const reuploadedPhotoId = await reuploadPhotoToGroup(att.photo, VK_GROUP1_ID, false);
+          if (reuploadedPhotoId) {
+            attachments.push(reuploadedPhotoId);
           }
-        } else if (att.type === 'video') {
-          if (att.video && att.video.owner_id && att.video.id) {
-            let videoId = `video${att.video.owner_id}_${att.video.id}`;
-            if (att.video.access_key) {
-              videoId += `_${att.video.access_key}`;
-            }
-            attachments.push(videoId);
+        }
+      } else if (att.type === 'video') {
+        if (att.video && att.video.owner_id && att.video.id) {
+          let videoId = `video${att.video.owner_id}_${att.video.id}`;
+          if (att.video.access_key) {
+            videoId += `_${att.video.access_key}`;
           }
-        } else if (att.type === 'doc') {
-          if (att.doc && att.doc.owner_id && att.doc.id) {
-            let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
-            if (att.doc.access_key) {
-              docId += `_${att.doc.access_key}`;
-            }
-            attachments.push(docId);
+          attachments.push(videoId);
+        }
+      } else if (att.type === 'doc') {
+        if (att.doc && att.doc.owner_id && att.doc.id) {
+          let docId = `doc${att.doc.owner_id}_${att.doc.id}`;
+          if (att.doc.access_key) {
+            docId += `_${att.doc.access_key}`;
           }
-        } else if (att.type === 'audio') {
-          if (att.audio && att.audio.owner_id && att.audio.id) {
-            const audioId = `audio${att.audio.owner_id}_${att.audio.id}`;
-            attachments.push(audioId);
-          }
+          attachments.push(docId);
+        }
+      } else if (att.type === 'audio') {
+        if (att.audio && att.audio.owner_id && att.audio.id) {
+          const audioId = `audio${att.audio.owner_id}_${att.audio.id}`;
+          attachments.push(audioId);
         }
       }
     }
 
-    // Публикуем в доску объявлений группы 1
-    // Важно: owner_id должен быть отрицательным (для группы)
-    // from_group: 1 означает публикацию от имени группы
+    // Фото, прикреплённые к самому сообщению с командой
+    for (const att of cmdAttachments) {
+      if (att.type === 'photo' && att.photo) {
+        const reuploadedPhotoId = await reuploadPhotoToGroup(att.photo, VK_GROUP1_ID, false);
+        if (reuploadedPhotoId) {
+          attachments.push(reuploadedPhotoId);
+        }
+      }
+    }
+
     const postParams = {
       owner_id: -VK_GROUP1_ID,
       message: text,
@@ -733,8 +756,6 @@ async function cmdPrikaz(ctx) {
       postParams.attachments = attachments.join(',');
     }
 
-    // Используем токен группы 1 (useGroup2 = false)
-    // Важно: группа должна иметь права на публикацию на своей стене
     await callVK('wall.post', postParams, false);
 
     await sendMessage(ctx.peerId, 'Приказ успешно опубликован в доску объявлений группы');
@@ -1041,7 +1062,7 @@ async function cmdKick(ctx) {
     banText = `. Занесён в ЧС до ${banEndText}`;
   }
 
-  await sendMessage(ctx.peerId, `${userLink} кик��������ут из всех чатов (удалён из ${removed})${banText}`);
+  await sendMessage(ctx.peerId, `${userLink} кик����������ут из всех чатов (удалён из ${removed})${banText}`);
 
   // Логируем в Руководство (только если команда была не из чата руководства)
   if (ctx.peerId !== CHATS.rukovodstvo && CHATS.rukovodstvo > 0) {
@@ -1239,7 +1260,7 @@ async function cmdBlacklist(ctx) {
   const subcommand = ctx.args[1]?.toLowerCase();
 
   // !чс список - показать всех в ЧС
-  if (subcommand === 'список' || !subcommand) {
+  if (subcommand === 'спис��к' || !subcommand) {
     if (storage.localBlacklist.size === 0) {
       await sendMessage(ctx.peerId, 'Локальный ЧС пуст');
       return;
@@ -1344,7 +1365,7 @@ async function cmdMute(ctx) {
       return;
     }
   } else {
-    // В остальных чатах (включая Руководство) СС и РС
+    // В остальных чатах (вклю��ая Руководство) СС и РС
     if (!(await hasPermission(ctx.userId, ctx.peerId, ['rs', 'ss']))) {
       await sendMessage(ctx.peerId, 'Команда доступна только РС и СС');
       return;
@@ -1430,7 +1451,7 @@ async function cmdMute(ctx) {
     const endDate = Date.now() + duration * 60 * 1000;
     const endDateText = formatBanEndDate(endDate);
 
-    await sendMessage(ctx.peerId, `${userLink} замучен до ${endDateText}\nПричина: ${reason}\n\n⚠️ Мут действует во всех чатах. Все сообщения пользователя будут автома��ически удаляться.`);
+    await sendMessage(ctx.peerId, `${userLink} замучен до ${endDateText}\nПричина: ${reason}\n\n⚠️ Мут действует во всех чатах. Все сообщения пользователя будут авт��ма��ически удаляться.`);
 
     // Логируем в Руководство (если команда не из руководства)
     if (ctx.peerId !== CHATS.rukovodstvo && CHATS.rukovodstvo > 0) {
@@ -1794,7 +1815,7 @@ async function handleEvent(event) {
       if (Math.abs(post.owner_id) === parseInt(VK_GROUP1_ID)) {
         console.log('[VK Bot] Обнаружен новый пост в группе 1, пересылаем в доску объявлений');
         
-        // Пересылаем пост в доску объяв��ений
+        // Пересылаем пост в доску ��бъяв��ений
         if (CHATS.doska && CHATS.doska > 0) {
           try {
             // Используем параметр forward для пересылки поста
