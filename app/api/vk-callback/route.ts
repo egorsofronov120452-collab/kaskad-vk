@@ -24,8 +24,7 @@ export async function POST(req: NextRequest) {
       console.error('[Bot] VK_CONFIRMATION_TOKEN не задан!');
       return new NextResponse('error', { status: 500 });
     }
-    console.log('[Bot] confirmation token sent:', token);
-    // VK требует ровно строку токена, без JSON-обёртки и лишних символов
+    // VK требует ровно строку токена без JSON-обёртки и лишних символов
     return new Response(token, {
       status: 200,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
