@@ -326,32 +326,54 @@ export async function cmdChatInfo(ctx: BotCtx) {
 }
 
 // ============= !увед =============
-async function notifyMembers(peerId: number, userIds: number[]) {
+async function notifyMembers(peerId: number, userIds: number[]): Promise<number> {
+  if (userIds.length === 0) return 0;
+
   const chunks: number[][] = [];
   for (let i = 0; i < userIds.length; i += 10) {
     chunks.push(userIds.slice(i, i + 10));
   }
 
-  for (const chunk of chunks) {
-    const mentions = chunk.map(id => `[id${id}|\u200b]`).join(' ');
+  // Шаг 1: отправляем первый чанк — получаем cmid единственного сообщения
+  const firstMentions = chunks[0].map(id => `[id${id}|\u200b]`).join(' ');
+  let cmid: number | null = null;
+  try {
+    const raw = await callVK('messages.send', {
+      peer_id: peerId,
+      message: firstMentions,
+      random_id: Math.floor(Math.random() * 1_000_000_000),
+    });
+    cmid = typeof raw === 'object' ? raw.conversation_message_id ?? raw : raw;
+  } catch (err: any) {
+    console.error('[Bot] Ошибка отправки первого уведомления:', err.message);
+    return 0;
+  }
+
+  // Шаг 2: редактируем то же самое сообщение для каждого следующего чанка
+  for (let i = 1; i < chunks.length; i++) {
+    const mentions = chunks[i].map(id => `[id${id}|\u200b]`).join(' ');
     try {
-      const raw = await callVK('messages.send', {
+      await callVK('messages.edit', {
         peer_id: peerId,
+        conversation_message_id: cmid,
         message: mentions,
-        random_id: Math.floor(Math.random() * 1_000_000_000),
       });
-      const cmid = typeof raw === 'object' ? raw.conversation_message_id : raw;
-      if (cmid != null) {
-        await callVK('messages.edit', {
-          peer_id: peerId,
-          conversation_message_id: cmid,
-          message: '\u200b',
-        });
-      }
     } catch (err: any) {
-      console.error('[Bot] Ошибка уведомления:', err.message);
+      console.error('[Bot] Ошибка редактирования уведомления:', err.message);
     }
   }
+
+  // Шаг 3: финальное редактирование — итоговый текст
+  try {
+    await callVK('messages.edit', {
+      peer_id: peerId,
+      conversation_message_id: cmid,
+      message: `Отправлено уведомление ${userIds.length} участникам`,
+    });
+  } catch (err: any) {
+    console.error('[Bot] Ошибка финального редактирования:', err.message);
+  }
+
   return userIds.length;
 }
 
@@ -369,8 +391,7 @@ export async function cmdNotify(ctx: BotCtx) {
       const targetIds = (members.items as any[])
         .filter(m => m.member_id > 0 && !rsIds.has(m.member_id))
         .map(m => m.member_id);
-      const count = await notifyMembers(ctx.peerId, targetIds);
-      await sendMessage(ctx.peerId, `Отправлено уведомление ${count} участникам`);
+      await notifyMembers(ctx.peerId, targetIds);
     } catch (err: any) {
       await sendMessage(ctx.peerId, `Ошибка уведомления: ${err.message}`);
     }
@@ -390,8 +411,7 @@ export async function cmdNotify(ctx: BotCtx) {
     const targetIds = (members.items as any[])
       .filter(m => m.member_id > 0 && !privileged.has(m.member_id))
       .map(m => m.member_id);
-    const count = await notifyMembers(ctx.peerId, targetIds);
-    await sendMessage(ctx.peerId, `Отправлено уведомление ${count} участникам`);
+    await notifyMembers(ctx.peerId, targetIds);
   } catch (err: any) {
     await sendMessage(ctx.peerId, `Ошибка уведомления: ${err.message}`);
   }
@@ -415,7 +435,7 @@ export async function cmdDiagnostics(ctx: BotCtx) {
       report += `Группа: ${groups[0].name} (ID: ${groupId})\n\n`;
     }
   } catch (err: any) {
-    report += `Ошибка получения группы: ${err.message}\n\n`;
+    report += `Ошибка получ��ния группы: ${err.message}\n\n`;
   }
 
   report += 'Проверка чатов:\n';
