@@ -1,9 +1,74 @@
 import {
   VK_GROUP1_TOKEN,
   VK_GROUP2_TOKEN,
+  VK_GROUP3_TOKEN,
   VK_USER_TOKEN,
   VK_API_VERSION,
 } from './config';
+
+// Универсальный вызов: groupId 1|2|3, или legacy useGroup2 для совместимости
+export async function callVKGroup(
+  method: string,
+  params: Record<string, string | number | undefined> = {},
+  groupId: 1 | 2 | 3 = 1,
+  useUserToken = false,
+): Promise<any> {
+  let token: string;
+  if (useUserToken && VK_USER_TOKEN) {
+    token = VK_USER_TOKEN;
+  } else {
+    token = groupId === 3 ? VK_GROUP3_TOKEN : groupId === 2 ? VK_GROUP2_TOKEN : VK_GROUP1_TOKEN;
+  }
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) body.set(k, String(v));
+  }
+  body.set('access_token', token);
+  body.set('v', VK_API_VERSION);
+  const res = await fetch(`https://api.vk.com/method/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(`VK API Error: ${data.error.error_msg}`);
+  return data.response;
+}
+
+export async function sendMessageGroup(
+  peerId: number,
+  message: string,
+  groupId: 1 | 2 | 3 = 1,
+  extra: Record<string, string | number | undefined> = {},
+): Promise<number | null> {
+  try {
+    const response = await callVKGroup('messages.send', {
+      peer_id: peerId,
+      message,
+      random_id: Math.floor(Math.random() * 1_000_000_000),
+      ...extra,
+    }, groupId);
+    return response as number;
+  } catch (err: any) {
+    console.error(`[Bot] Ошибка отправки сообщения (group${groupId}):`, err.message);
+    return null;
+  }
+}
+
+export async function editMessageGroup(
+  peerId: number,
+  conversationMessageId: number,
+  message: string,
+  groupId: 1 | 2 | 3 = 1,
+  extra: Record<string, string | number | undefined> = {},
+): Promise<void> {
+  await callVKGroup('messages.edit', {
+    peer_id: peerId,
+    conversation_message_id: conversationMessageId,
+    message,
+    ...extra,
+  }, groupId);
+}
 
 export async function callVK(
   method: string,
@@ -11,30 +76,7 @@ export async function callVK(
   useGroup2 = false,
   useUserToken = false,
 ): Promise<any> {
-  let token: string;
-
-  if (useUserToken && VK_USER_TOKEN) {
-    token = VK_USER_TOKEN;
-  } else {
-    token = useGroup2 ? VK_GROUP2_TOKEN : VK_GROUP1_TOKEN;
-  }
-
-  const body = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined) body.set(k, String(v));
-  }
-  body.set('access_token', token);
-  body.set('v', VK_API_VERSION);
-
-  const res = await fetch(`https://api.vk.com/method/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
-
-  const data = await res.json();
-  if (data.error) throw new Error(`VK API Error: ${data.error.error_msg}`);
-  return data.response;
+  return callVKGroup(method, params, useGroup2 ? 2 : 1, useUserToken);
 }
 
 export async function sendMessage(
