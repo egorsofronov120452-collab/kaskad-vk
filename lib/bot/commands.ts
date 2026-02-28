@@ -336,18 +336,21 @@ async function notifyMembers(peerId: number, userIds: number[]): Promise<number>
 
   // Шаг 1: отправляем первый чанк — получаем cmid единственного сообщения
   const firstMentions = chunks[0].map(id => `[id${id}|\u200b]`).join(' ');
-  let cmid: number | null = null;
+  let cmid: number | undefined;
   try {
     const raw = await callVK('messages.send', {
       peer_id: peerId,
       message: firstMentions,
       random_id: Math.floor(Math.random() * 1_000_000_000),
     });
-    cmid = typeof raw === 'object' ? raw.conversation_message_id ?? raw : raw;
+    const id = typeof raw === 'object' ? (raw.conversation_message_id ?? raw) : raw;
+    cmid = typeof id === 'number' ? id : undefined;
   } catch (err: any) {
     console.error('[Bot] Ошибка отправки первого уведомления:', err.message);
     return 0;
   }
+
+  if (cmid === undefined) return userIds.length;
 
   // Шаг 2: редактируем то же самое сообщение для каждого следующего чанка
   for (let i = 1; i < chunks.length; i++) {
