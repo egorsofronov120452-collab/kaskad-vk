@@ -1,6 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { after } from 'next/server';
-import { VK_CALLBACK_SECRET, VK_CONFIRMATION_TOKEN } from '@/lib/bot/config';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { handleEvent } from '@/lib/bot/events';
 
 export const runtime = 'nodejs';
@@ -19,7 +17,8 @@ export async function POST(req: NextRequest) {
 
   // 1. Подтверждение адреса сервера
   if (body.type === 'confirmation') {
-    const token = VK_CONFIRMATION_TOKEN?.trim();
+    // Читаем прямо из process.env внутри handler — гарантированно актуальное значение
+    const token = (process.env.VK_CONFIRMATION_TOKEN ?? '').trim();
     if (!token) {
       console.error('[Bot] VK_CONFIRMATION_TOKEN не задан!');
       return new NextResponse('error', { status: 500 });
@@ -32,7 +31,8 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Проверка секрета
-  if (VK_CALLBACK_SECRET && body.secret !== VK_CALLBACK_SECRET) {
+  const callbackSecret = process.env.VK_CALLBACK_SECRET ?? '';
+  if (callbackSecret && body.secret !== callbackSecret) {
     return new NextResponse('forbidden', { status: 403 });
   }
 
