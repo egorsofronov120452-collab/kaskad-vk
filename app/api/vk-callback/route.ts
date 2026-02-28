@@ -19,13 +19,16 @@ export async function POST(req: NextRequest) {
 
   // 1. Подтверждение адреса сервера
   if (body.type === 'confirmation') {
-    if (!VK_CONFIRMATION_TOKEN) {
+    const token = VK_CONFIRMATION_TOKEN?.trim();
+    if (!token) {
       console.error('[Bot] VK_CONFIRMATION_TOKEN не задан!');
       return new NextResponse('error', { status: 500 });
     }
-    return new NextResponse(VK_CONFIRMATION_TOKEN, {
+    console.log('[Bot] confirmation token sent:', token);
+    // VK требует ровно строку токена, без JSON-обёртки и лишних символов
+    return new Response(token, {
       status: 200,
-      headers: { 'Content-Type': 'text/plain' },
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
   }
 
