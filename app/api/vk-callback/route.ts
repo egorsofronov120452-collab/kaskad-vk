@@ -17,15 +17,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
+  console.log('[v0] incoming event type:', body.type, '| group_id:', body.group_id);
+
   // 1. Подтверждение адреса сервера
   if (body.type === 'confirmation') {
     const token = VK_CONFIRMATION_TOKEN?.trim();
+    console.log('[v0] VK_CONFIRMATION_TOKEN value:', JSON.stringify(token));
     if (!token) {
-      console.error('[Bot] VK_CONFIRMATION_TOKEN не задан!');
+      console.error('[v0] VK_CONFIRMATION_TOKEN не задан!');
       return new NextResponse('error', { status: 500 });
     }
-    console.log('[Bot] confirmation token sent:', token);
-    // VK требует ровно строку токена, без JSON-обёртки и лишних символов
+    // VK требует ровно строку токена без JSON-обёртки и лишних символов
+    console.log('[v0] returning confirmation token:', token);
     return new Response(token, {
       status: 200,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },

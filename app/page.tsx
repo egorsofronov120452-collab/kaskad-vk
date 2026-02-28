@@ -1,5 +1,8 @@
 import { CHATS } from '@/lib/bot/config';
 
+// Серверный компонент — process.env читается только на сервере
+export const dynamic = 'force-dynamic';
+
 const COMMANDS = [
   { cmd: '!пост', desc: 'Опубликовать сообщение в группу 2 (РС, СС)' },
   { cmd: '!приказ', desc: 'Опубликовать приказ в группу 1 (РС, СС)' },
@@ -14,27 +17,39 @@ const COMMANDS = [
   { cmd: '!чат', desc: 'Информация о текущем чате' },
 ];
 
-const CHAT_ALIASES: Record<string, string> = {
-  рс: 'Руководство',
-  сс: 'Старший Состав',
-  уц: 'Учебный Центр',
-  до: 'Доска Объявлений',
-  дисп: 'Диспетчерская',
-  флуд: 'Флудилка',
-  жа: 'Журнал Активности',
-  спонсор: 'Спонсорская беседа',
-};
+const CHAT_ALIASES: [string, string][] = [
+  ['рс', 'Руководство'],
+  ['сс', 'Старший Состав'],
+  ['уц', 'Учебный Центр'],
+  ['до', 'Доска Объявлений'],
+  ['дисп', 'Диспетчерская'],
+  ['флуд', 'Флудилка'],
+  ['жа', 'Журнал Активности'],
+  ['спонсор', 'Спонсорская'],
+];
 
-function EnvRow({ label, value }: { label: string; value: string | number }) {
-  const ok = Boolean(value && value !== '0');
+const ENV_VARS = [
+  'VK_GROUP1_TOKEN',
+  'VK_GROUP2_TOKEN',
+  'VK_USER_TOKEN',
+  'VK_GROUP1_ID',
+  'VK_GROUP2_ID',
+  'VK_CONFIRMATION_TOKEN',
+  'VK_CALLBACK_SECRET',
+  'DATABASE_URL',
+] as const;
+
+function EnvRow({ label, isSet }: { label: string; isSet: boolean }) {
   return (
     <tr>
       <td className="py-1 pr-4 font-mono text-sm text-[#b0b8c8]">{label}</td>
       <td>
         <span
-          className={`inline-block rounded px-2 py-0.5 text-xs font-semibold ${ok ? 'bg-[#1a3a2a] text-[#4ade80]' : 'bg-[#3a1a1a] text-[#f87171]'}`}
+          className={`inline-block rounded px-2 py-0.5 text-xs font-semibold ${
+            isSet ? 'bg-[#1a3a2a] text-[#4ade80]' : 'bg-[#3a1a1a] text-[#f87171]'
+          }`}
         >
-          {ok ? 'задан' : 'не задан'}
+          {isSet ? 'задан' : 'не задан'}
         </span>
       </td>
     </tr>
@@ -42,7 +57,13 @@ function EnvRow({ label, value }: { label: string; value: string | number }) {
 }
 
 export default function Home() {
-  const chatsConfigured = Object.values(CHATS).filter(v => v > 0).length;
+  // Читаем env только на сервере и передаём простые булевы значения
+  const envStatus = ENV_VARS.map((key) => ({
+    label: key,
+    isSet: Boolean(process.env[key]),
+  }));
+
+  const chatsConfigured = Object.values(CHATS).filter((v) => v > 0).length;
   const totalChats = Object.keys(CHATS).length;
 
   return (
@@ -63,27 +84,23 @@ export default function Home() {
         <section className="mb-8 rounded-xl border border-[#1e2a3a] bg-[#131820] p-5">
           <h2 className="text-xs uppercase tracking-widest text-[#64748b] mb-3 font-semibold">Callback endpoint</h2>
           <code className="block rounded-lg bg-[#0a0d13] border border-[#1e2a3a] px-4 py-3 text-[#93c5fd] font-mono text-sm select-all">
-            {'{your-domain}'}/api/vk-callback
+            https://YOUR-DOMAIN/api/vk-callback
           </code>
           <p className="mt-3 text-xs text-[#475569]">
             Укажи этот адрес в настройках Callback API группы ВКонтакте.
-            Тип события подтверждения: <code className="text-[#93c5fd]">confirmation</code>.
           </p>
         </section>
 
         {/* Env status */}
         <section className="mb-8 rounded-xl border border-[#1e2a3a] bg-[#131820] p-5">
-          <h2 className="text-xs uppercase tracking-widest text-[#64748b] mb-3 font-semibold">Переменные окружения</h2>
+          <h2 className="text-xs uppercase tracking-widest text-[#64748b] mb-3 font-semibold">
+            Переменные окружения
+          </h2>
           <table className="w-full">
             <tbody>
-              <EnvRow label="VK_GROUP1_TOKEN" value={process.env.VK_GROUP1_TOKEN ?? ''} />
-              <EnvRow label="VK_GROUP2_TOKEN" value={process.env.VK_GROUP2_TOKEN ?? ''} />
-              <EnvRow label="VK_USER_TOKEN" value={process.env.VK_USER_TOKEN ?? ''} />
-              <EnvRow label="VK_GROUP1_ID" value={process.env.VK_GROUP1_ID ?? ''} />
-              <EnvRow label="VK_GROUP2_ID" value={process.env.VK_GROUP2_ID ?? ''} />
-              <EnvRow label="VK_CONFIRMATION_TOKEN" value={process.env.VK_CONFIRMATION_TOKEN ?? ''} />
-              <EnvRow label="VK_CALLBACK_SECRET" value={process.env.VK_CALLBACK_SECRET ?? ''} />
-              <EnvRow label="DATABASE_URL" value={process.env.DATABASE_URL ?? ''} />
+              {envStatus.map(({ label, isSet }) => (
+                <EnvRow key={label} label={label} isSet={isSet} />
+              ))}
             </tbody>
           </table>
         </section>
@@ -92,22 +109,30 @@ export default function Home() {
         <section className="mb-8 rounded-xl border border-[#1e2a3a] bg-[#131820] p-5">
           <h2 className="text-xs uppercase tracking-widest text-[#64748b] mb-3 font-semibold">
             Чаты{' '}
-            <span className={`ml-2 text-xs font-semibold ${chatsConfigured === totalChats ? 'text-[#4ade80]' : 'text-[#fbbf24]'}`}>
+            <span
+              className={`ml-2 text-xs font-semibold ${
+                chatsConfigured === totalChats ? 'text-[#4ade80]' : 'text-[#fbbf24]'
+              }`}
+            >
               {chatsConfigured}/{totalChats}
             </span>
           </h2>
           <div className="grid grid-cols-2 gap-2">
             {Object.entries(CHATS).map(([key, peerId]) => (
-              <div key={key} className="flex items-center justify-between rounded-lg bg-[#0a0d13] border border-[#1e2a3a] px-3 py-2">
+              <div
+                key={key}
+                className="flex items-center justify-between rounded-lg bg-[#0a0d13] border border-[#1e2a3a] px-3 py-2"
+              >
                 <span className="text-sm text-[#cbd5e1] capitalize">{key}</span>
                 <span className={`text-xs font-mono ${peerId > 0 ? 'text-[#4ade80]' : 'text-[#475569]'}`}>
-                  {peerId > 0 ? peerId : '—'}
+                  {peerId > 0 ? peerId : '\u2014'}
                 </span>
               </div>
             ))}
           </div>
           <p className="mt-3 text-xs text-[#475569]">
-            Peer ID чата можно узнать командой <code className="text-[#93c5fd]">!чат</code> в нужной беседе.
+            Peer ID можно узнать командой{' '}
+            <code className="text-[#93c5fd]">!чат</code> в нужной беседе.
           </p>
         </section>
 
@@ -122,9 +147,12 @@ export default function Home() {
               </div>
             ))}
           </div>
-          <div className="mt-3 text-xs text-[#475569]">
-            Псевдонимы чатов: {Object.entries(CHAT_ALIASES).map(([alias, name]) => (
-              <span key={alias} className="mr-2"><code className="text-[#93c5fd]">{alias}</code> = {name}</span>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {CHAT_ALIASES.map(([alias, name]) => (
+              <span key={alias} className="text-xs">
+                <code className="text-[#93c5fd]">{alias}</code>
+                <span className="text-[#475569]"> = {name}</span>
+              </span>
             ))}
           </div>
         </section>
