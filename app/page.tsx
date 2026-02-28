@@ -15,17 +15,6 @@ const COMMANDS = [
   { cmd: '!чат', desc: 'Информация о текущем чате' },
 ];
 
-const CHAT_ALIASES: [string, string][] = [
-  ['рс', 'Руководство'],
-  ['сс', 'Старший Состав'],
-  ['уц', 'Учебный Центр'],
-  ['до', 'Доска Объявлений'],
-  ['дисп', 'Диспетчерская'],
-  ['флуд', 'Флудилка'],
-  ['жа', 'Журнал Активности'],
-  ['спонсор', 'Спонсорская'],
-];
-
 const ENV_VARS = [
   'VK_GROUP1_TOKEN',
   'VK_GROUP2_TOKEN',
@@ -38,14 +27,14 @@ const ENV_VARS = [
 ] as const;
 
 const CHAT_ENV_VARS: [string, string][] = [
-  ['VK_CHAT_RUKOVODSTVO_ID', 'Руководство'],
-  ['VK_CHAT_SS_ID', 'Старший Состав'],
-  ['VK_CHAT_UCHEBNY_ID', 'Учебный Центр'],
-  ['VK_CHAT_DOSKA_ID', 'Доска Объявлений'],
-  ['VK_CHAT_DISPETCHERSKAYA_ID', 'Диспетчерская'],
-  ['VK_CHAT_FLUDILKA_ID', 'Флудилка'],
-  ['VK_CHAT_ZHURNAL_ID', 'Журнал Активности'],
-  ['VK_CHAT_SPONSOR_ID', 'Спонсорская'],
+  ['VK_CHAT_RUKOVODSTVO_ID', 'Rukovodstvo'],
+  ['VK_CHAT_SS_ID', 'Starshiy Sostav'],
+  ['VK_CHAT_UCHEBNY_ID', 'Uchebnyy Tsentr'],
+  ['VK_CHAT_DOSKA_ID', 'Doska Obyavleniy'],
+  ['VK_CHAT_DISPETCHERSKAYA_ID', 'Dispetcherskaya'],
+  ['VK_CHAT_FLUDILKA_ID', 'Fludilka'],
+  ['VK_CHAT_ZHURNAL_ID', 'Zhurnal Aktivnosti'],
+  ['VK_CHAT_SPONSOR_ID', 'Sponsorskaya'],
 ];
 
 function Badge({ ok }: { ok: boolean }) {
@@ -153,15 +142,7 @@ export default async function Home() {
               </div>
             ))}
           </div>
-          <div className="mt-4 flex flex-wrap gap-3">
-            {CHAT_ALIASES.map(([alias, name]) => (
-              <span key={alias} className="text-xs">
-                <code className="text-[#93c5fd]">{alias}</code>
-                {' = '}
-                <span className="text-[#475569]">{name}</span>
-              </span>
-            ))}
-          </div>
+
         </section>
 
         {/* Footer */}
